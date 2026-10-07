@@ -1,0 +1,23 @@
+{
+  "name": "dataviewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "gridstack": "^12.6.0",
+    "lucide": "^1.52.0",
+    "papaparse": "^5.5.3",
+    "plotly.js-dist-min": "^3.7.0"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.5.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7"
+  }
+}
