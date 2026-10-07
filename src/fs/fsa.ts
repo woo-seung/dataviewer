@@ -24,7 +24,16 @@ type W = typeof window & {
 
 const w = window as W;
 
-export const fsaSupported = typeof w.showDirectoryPicker === 'function';
+/** Embedded in another page (e.g. a sandboxed preview frame), where pickers are refused. */
+export const inFrame = (() => {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+})();
+
+export const fsaSupported = typeof w.showDirectoryPicker === 'function' && !inFrame;
 
 export const CSV_TYPES: PickerType[] = [{ description: 'CSV', accept: { 'text/csv': ['.csv', '.tsv', '.txt'] } }];
 export const WS_TYPES: PickerType[] = [{ description: 'Chronos 워크스페이스', accept: { 'application/octet-stream': ['.chronos'], 'application/json': ['.json'] } }];

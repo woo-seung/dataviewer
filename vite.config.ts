@@ -1,7 +1,13 @@
 import { defineConfig } from 'vite';
+import { viteSingleFile } from 'vite-plugin-singlefile';
 
-export default defineConfig({
+// `vite build --mode single` → one self-contained HTML file (opens from disk, no server).
+export default defineConfig(({ mode }) => ({
   base: './',
   worker: { format: 'es' },
-  build: { chunkSizeWarningLimit: 6000 },
-});
+  plugins: mode === 'single' ? [viteSingleFile()] : [],
+  build: {
+    chunkSizeWarningLimit: 6000,
+    outDir: mode === 'single' ? 'dist-single' : 'dist',
+  },
+}));

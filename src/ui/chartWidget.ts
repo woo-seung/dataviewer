@@ -30,7 +30,7 @@ import { windowed, windowStats, type Window } from '../data/downsample';
 import { formatTime } from '../data/time';
 import { resolveColor, withAlpha } from '../palette';
 import { cssVar, downloadBlob, formatValue, h, icon, iconButton, lowerBound, nearestIndex, rafThrottle } from '../util';
-import { showMenu, type MenuItem } from './overlays';
+import { notice, showMenu, type MenuItem } from './overlays';
 import { actions } from '../actions';
 
 export const CHART_TYPES: { type: ChartType; label: string; icon: IconNode }[] = [
@@ -855,7 +855,7 @@ export class ChartWidget {
       x += g.measureText(s.label).width + 32 * dpr;
     }
     const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/png'));
-    if (blob) downloadBlob(blob, `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`);
+    if (blob) void downloadBlob(blob, `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`).catch((e: Error) => notice(e.message, 5000, 'error'));
   }
 
   exportCsv() {
@@ -884,6 +884,6 @@ export class ChartWidget {
     const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
     const lines = [['timestamp', ...series.map((s) => esc(s.label))].join(',')];
     for (const t of times) lines.push([formatTime(t, true), ...cols.map((f) => f(t))].join(','));
-    downloadBlob(new Blob([lines.join('\n')], { type: 'text/csv' }), `${st.title || 'chart'}.csv`);
+    void downloadBlob(new Blob([lines.join('\n')], { type: 'text/csv' }), `${st.title || 'chart'}.csv`).catch((e: Error) => notice(e.message, 5000, 'error'));
   }
 }

@@ -1,5 +1,5 @@
 import { ChevronRight, FileChartColumn, FileSpreadsheet, Folder, FolderOpen, FolderX, LayoutDashboard, RefreshCw, Save } from 'lucide';
-import { fsaSupported, listDir, type DirEntry } from '../fs/fsa';
+import { fsaSupported, inFrame, listDir, type DirEntry } from '../fs/fsa';
 import { project } from '../project';
 import { store } from '../store';
 import { actions } from '../actions';
@@ -56,7 +56,15 @@ export class FolderTree {
       return;
     }
     if (!fsaSupported) {
-      out.push(h('div', { class: 'folder-note' }, '폴더 연결(상대경로 자동 로드)은 Chrome / Edge에서 지원됩니다. 이 브라우저에서는 워크스페이스 파일에 데이터만 저장됩니다.'));
+      out.push(
+        h(
+          'div',
+          { class: 'folder-note' },
+          inFrame
+            ? '이 미리보기 페이지에서는 폴더 접근이 막혀 있습니다. 불러온 데이터와 레이아웃은 이 브라우저에 자동 보관됩니다. 작업 폴더 기능은 단일 HTML 파일 버전을 Chrome / Edge에서 열어 사용하세요.'
+            : '폴더 연결(상대경로 자동 로드)은 Chrome / Edge에서 지원됩니다. 이 브라우저에서는 워크스페이스 파일에 데이터만 저장됩니다.',
+        ),
+      );
       this.body.replaceChildren(...out);
       return;
     }

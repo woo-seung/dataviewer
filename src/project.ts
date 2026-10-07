@@ -217,7 +217,12 @@ class Project {
       if (!t) return;
       if (t === 'download') {
         const chunks = encodeChronos(this.exportWorkspace(false), [...store.sources.values()], () => undefined);
-        downloadBlob(new Blob(chunks as BlobPart[], { type: 'application/octet-stream' }), 'workspace.chronos');
+        try {
+          if (!(await downloadBlob(new Blob(chunks as BlobPart[], { type: 'application/octet-stream' }), 'workspace.chronos'))) return;
+        } catch {
+          notice('이 페이지에서는 워크스페이스 파일을 내려받을 수 없습니다. 데이터와 레이아웃은 이 브라우저에 자동 보관됩니다.', 7000);
+          return;
+        }
         this.dirty = false;
         this.changed();
         return;
@@ -267,9 +272,9 @@ class Project {
       notice(`전처리 결과를 작업 폴더의 ${name} 에 저장합니다.`);
       return this.save({ quiet: true });
     }
-    this.dirty = store.sources.size > 0;
+    this.dirty = fsaSupported && store.sources.size > 0;
     this.changed();
-    if (!this.warnedNoFolder && store.sources.size) {
+    if (fsaSupported && !this.warnedNoFolder && store.sources.size) {
       this.warnedNoFolder = true;
       notice('작업 폴더를 열거나 워크스페이스를 저장하면 CSV 상대경로와 전처리 결과가 함께 저장됩니다.', 7000);
     }

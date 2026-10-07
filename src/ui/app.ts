@@ -17,6 +17,7 @@ import {
 import { store } from '../store';
 import { actions } from '../actions';
 import { project } from '../project';
+import { fsaSupported } from '../fs/fsa';
 import { formatTime } from '../data/time';
 import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
 import { sourceBytes } from '../data/db';
@@ -175,7 +176,7 @@ export class App {
   private updateFileStatus() {
     const f = project.file;
     const root = project.root?.name;
-    const label = f ? (f.path ?? f.name) : '저장되지 않은 워크스페이스';
+    const label = f ? (f.path ?? f.name) : fsaSupported ? '저장되지 않은 워크스페이스' : '브라우저에 자동 보관';
     this.status.file.textContent = `${root ? `📁 ${root} · ` : ''}${label}${project.saving ? ' · 저장 중…' : project.dirty ? ' ●' : ''}`;
     this.status.file.title = project.dirty ? '저장되지 않은 변경 (Ctrl+S)' : '';
     document.title = `${f ? f.name.replace(/\.chronos$/i, '') : 'Chronos Vault'}${project.dirty ? ' •' : ''}`;

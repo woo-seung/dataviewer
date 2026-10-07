@@ -3,6 +3,8 @@ import type { DataSource } from '../types';
 import { detectTimeFormat, parseNumber, parseTime, type TimeFormat } from './time';
 import type { ParseRequest, WorkerMessage } from './csvWorker';
 import { uid } from '../util';
+// Inlined as a blob worker so the app also runs from a single HTML file / sandboxed frame.
+import CsvWorker from './csvWorker?worker&inline';
 
 export interface CsvPreview {
   delimiter: string;
@@ -90,7 +92,7 @@ export interface ImportJob {
 }
 
 export function importCsv(file: File, opts: ImportOptions, onProgress?: (fraction: number, rows: number) => void, id = uid('src')): ImportJob {
-  const worker = new Worker(new URL('./csvWorker.ts', import.meta.url), { type: 'module' });
+  const worker: Worker = new CsvWorker();
   let rejectFn: (e: Error) => void = () => undefined;
   const promise = new Promise<DataSource>((resolve, reject) => {
     rejectFn = reject;

@@ -11,6 +11,7 @@ import type {
 } from './types';
 import { debounce, uid } from './util';
 import { sourceBytes, sourceDb } from './data/db';
+import { fsaSupported } from './fs/fsa';
 import { nextSlot, slotColor } from './palette';
 
 type Events = {
@@ -146,7 +147,9 @@ class Store {
   readonly uncached = new Set<string>();
 
   private cache(s: DataSource) {
-    if (sourceBytes(s) > this.ws.settings.cacheLimitMb * 1024 * 1024) {
+    // without folder access the browser copy is the only persistence, so keep everything
+    const limitMb = fsaSupported ? this.ws.settings.cacheLimitMb : Infinity;
+    if (sourceBytes(s) > limitMb * 1024 * 1024) {
       this.uncached.add(s.id);
       return sourceDb.delete(s.id);
     }

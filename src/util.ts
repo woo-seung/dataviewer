@@ -138,7 +138,33 @@ export function cssVar(name: string): string {
   return getComputedStyle(document.body).getPropertyValue(name).trim();
 }
 
-export function downloadBlob(blob: Blob, filename: string) {
+type DownloadsNs = { save(r: { filename: string; data: Blob }): Promise<unknown> };
+type ClaudeHost = { use?: (name: string) => Promise<DownloadsNs | null> };
+
+/**
+ * Save a generated file. Inside a host frame that blocks plain downloads, the
+ * host's download prompt is used when it offers one.
+ */
+export async function downloadBlob(blob: Blob, filename: string): Promise<boolean> {
+  const host = (window as unknown as { claude?: ClaudeHost }).claude;
+  if (host?.use) {
+    try {
+      const dl = await host.use('downloads');
+      if (dl) {
+        await dl.save({ filename, data: blob });
+        return true;
+      }
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === 'declined') return false;
+      if (code === 'rejected_extension') throw new Error('이 환경에서는 이 형식의 파일을 저장할 수 없습니다.');
+    }
+  }
+  plainDownload(blob, filename);
+  return true;
+}
+
+function plainDownload(blob: Blob, filename: string) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
