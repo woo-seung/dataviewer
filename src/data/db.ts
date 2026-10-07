@@ -1,4 +1,5 @@
 import type { DataSource } from '../types';
+import { buildBlocks } from './blocks';
 
 const DB_NAME = 'chronos-vault';
 const STORE = 'sources';
@@ -39,7 +40,17 @@ export const sourceDb = {
 
 // ---- workspace file (de)serialisation with embedded data ----
 
-function f64ToB64(a: Float64Array): string {
+export function sourceBytes(s: DataSource): number {
+  return s.time.byteLength + s.columns.reduce((n, c) => n + c.values.byteLength, 0);
+}
+
+/** Make sure every column has its summary index (older caches/files lack it). */
+export function ensureBlocks(s: DataSource): DataSource {
+  for (const c of s.columns) if (!c.blocks) c.blocks = buildBlocks(c.values);
+  return s;
+}
+
+function f64ToB64(a: Float64Array | Float32Array): string {
   const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
   let s = '';
   const CH = 0x8000;
@@ -47,11 +58,11 @@ function f64ToB64(a: Float64Array): string {
   return btoa(s);
 }
 
-function b64ToF64(s: string): Float64Array {
+function b64ToArr(s: string, dtype: 'f64' | 'f32' = 'f64'): Float64Array | Float32Array {
   const bin = atob(s);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Float64Array(bytes.buffer);
+  return dtype === 'f32' ? new Float32Array(bytes.buffer) : new Float64Array(bytes.buffer);
 }
 
 export interface SerializedSource {
@@ -61,21 +72,28 @@ export interface SerializedSource {
   importedAt: number;
   timeColumn: string;
   time: string;
-  columns: { name: string; values: string; min: number; max: number; mean: number }[];
+  columns: { name: string; values: string; dtype?: 'f64' | 'f32'; min: number; max: number; mean: number }[];
 }
 
 export function serializeSource(s: DataSource): SerializedSource {
   return {
     ...s,
     time: f64ToB64(s.time),
-    columns: s.columns.map((c) => ({ ...c, values: f64ToB64(c.values) })),
+    columns: s.columns.map((c) => ({
+      name: c.name,
+      min: c.min,
+      max: c.max,
+      mean: c.mean,
+      dtype: c.values instanceof Float32Array ? ('f32' as const) : ('f64' as const),
+      values: f64ToB64(c.values),
+    })),
   };
 }
 
 export function deserializeSource(s: SerializedSource): DataSource {
-  return {
+  return ensureBlocks({
     ...s,
-    time: b64ToF64(s.time),
-    columns: s.columns.map((c) => ({ ...c, values: b64ToF64(c.values) })),
-  };
+    time: b64ToArr(s.time) as Float64Array,
+    columns: s.columns.map((c) => ({ name: c.name, min: c.min, max: c.max, mean: c.mean, values: b64ToArr(c.values, c.dtype) })),
+  });
 }

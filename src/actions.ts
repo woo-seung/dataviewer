@@ -1,10 +1,13 @@
 import { generateSampleCsv } from './data/csv';
-import { deserializeSource, serializeSource, type SerializedSource } from './data/db';
+import { deserializeSource, serializeSource, sourceBytes, type SerializedSource } from './data/db';
 import { store } from './store';
 import type { DataSource, Workspace } from './types';
 import { openImportDialog } from './ui/importDialog';
 import { confirmDialog, notice } from './ui/overlays';
-import { downloadBlob, pickFiles } from './util';
+import { downloadBlob, formatBytes, pickFiles } from './util';
+
+/** Data above this is left out of the workspace file (re-linked by file name on open). */
+const EMBED_LIMIT = 150 * 1024 * 1024;
 
 interface WorkspaceFile {
   app: 'chronos-vault';
@@ -48,15 +51,23 @@ export const actions = {
   chartSource,
 
   async saveWorkspace() {
+    const all = [...store.sources.values()];
+    const total = all.reduce((n, s) => n + sourceBytes(s), 0);
+    const embed = total <= EMBED_LIMIT;
     const file: WorkspaceFile = {
       app: 'chronos-vault',
       version: 1,
       savedAt: new Date().toISOString(),
       workspace: store.ws,
-      sources: [...store.sources.values()].map(serializeSource),
+      sources: embed ? all.map(serializeSource) : [],
     };
     downloadBlob(new Blob([JSON.stringify(file)], { type: 'application/json' }), `workspace-${new Date().toISOString().slice(0, 10)}.chronos.json`);
-    notice('워크스페이스를 저장했습니다 (데이터 포함).');
+    notice(
+      embed
+        ? '워크스페이스를 저장했습니다 (데이터 포함).'
+        : `데이터가 커서(${formatBytes(total)}) 레이아웃만 저장했습니다. 열 때 같은 CSV 파일을 다시 열면 차트에 연결됩니다.`,
+      embed ? 3500 : 8000,
+    );
   },
 
   async openWorkspace(f?: File) {
@@ -66,7 +77,13 @@ export const actions = {
       const data = JSON.parse(await file.text()) as WorkspaceFile;
       if (data.app !== 'chronos-vault' || !data.workspace) throw new Error('워크스페이스 파일이 아닙니다.');
       store.replaceWorkspace(data.workspace, data.sources.map(deserializeSource));
-      notice(`워크스페이스 "${file.name}" 를 열었습니다.`);
+      const missing = store.missingSources();
+      notice(
+        missing.length
+          ? `워크스페이스를 열었습니다. 데이터 파일 ${missing.length}개를 다시 열어 주세요: ${missing.map((m) => m.name).join(', ')}`
+          : `워크스페이스 "${file.name}" 를 열었습니다.`,
+        missing.length ? 9000 : 3500,
+      );
     } catch (e) {
       notice(`열기 실패: ${(e as Error).message}`, 6000, 'error');
     }

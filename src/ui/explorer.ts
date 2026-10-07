@@ -4,6 +4,8 @@ import {
   ChevronsDownUp,
   FilePlus,
   FileSpreadsheet,
+  FileX,
+  HardDrive,
   FolderOpen,
   Info,
   LayoutDashboard,
@@ -91,7 +93,8 @@ export class Explorer {
     const q = this.search.value.trim().toLowerCase();
     this.tree.replaceChildren();
     this.visibleOrder = [];
-    if (!store.sources.size) {
+    const missing = store.missingSources();
+    if (!store.sources.size && !missing.length) {
       this.tree.append(
         h(
           'div',
@@ -114,6 +117,7 @@ export class Explorer {
         h('div', { class: 'tree-item-icon collapse-icon' }, icon(ChevronRight, 14)),
         icon(FileSpreadsheet, 15, 'file-icon'),
         h('div', { class: 'tree-item-inner' }, src.name),
+        store.uncached.has(src.id) ? h('span', { class: 'tree-item-flair', title: '용량이 커서 브라우저에 캐시하지 않았습니다. 새로고침 후에는 파일을 다시 열어야 합니다.' }, icon(HardDrive, 12)) : null,
         h('div', { class: 'tree-item-flair' }, formatCount(src.time.length)),
       );
       folder.addEventListener('click', () => {
@@ -173,6 +177,28 @@ export class Explorer {
           children.append(row);
         }
       this.tree.append(h('div', { class: 'tree-item nav-folder' }, folder, children));
+    }
+    for (const m of missing) {
+      if (q && !m.name.toLowerCase().includes(q)) continue;
+      const row = h(
+        'div',
+        { class: 'tree-item-self nav-folder-title is-missing', title: `${m.name}\n데이터가 로드되지 않았습니다. 클릭하여 같은 파일을 다시 열면 차트에 연결됩니다.` },
+        icon(FileX, 15, 'file-icon'),
+        h('div', { class: 'tree-item-inner' }, m.name),
+        h('div', { class: 'tree-item-flair' }, '다시 열기'),
+      );
+      row.addEventListener('click', () => void actions.openCsv());
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showMenu(
+          [
+            { title: '파일 다시 열기', icon: FolderOpen, onClick: () => void actions.openCsv() },
+            { title: '목록과 차트에서 제거', icon: Trash2, danger: true, onClick: () => store.removeSource(m.id) },
+          ],
+          { x: e.clientX, y: e.clientY },
+        );
+      });
+      this.tree.append(h('div', { class: 'tree-item nav-folder' }, row));
     }
   }
 

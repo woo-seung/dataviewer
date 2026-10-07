@@ -1,6 +1,7 @@
 import type {
   ChartType,
   DataSource,
+  SourceMeta,
   SeriesRef,
   Settings,
   TimeRange,
@@ -9,7 +10,7 @@ import type {
   Worksheet,
 } from './types';
 import { debounce, uid } from './util';
-import { sourceDb } from './data/db';
+import { sourceBytes, sourceDb } from './data/db';
 import { nextSlot, slotColor } from './palette';
 
 type Events = {
@@ -37,6 +38,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultMaxPoints: 4000,
   dragMode: 'zoom',
   zoomY: false,
+  cacheLimitMb: 400,
 };
 
 function newWorksheet(name: string): Worksheet {
@@ -123,7 +125,8 @@ class Store {
     if (!this.ws.worksheets.length) this.ws.worksheets.push(newWorksheet('Worksheet 1'));
     if (!this.ws.worksheets.some((s) => s.id === this.ws.activeId)) this.ws.activeId = this.ws.worksheets[0].id;
     this.history.clear();
-    void sourceDb.clear().then(() => Promise.all(sources.map((s) => sourceDb.put(s))));
+    for (const src of sources) this.upsertMeta(src);
+    void sourceDb.clear().then(() => Promise.all(sources.map((s) => this.cache(s))));
     this.emit('sources', undefined);
     this.emit('settings', undefined);
     this.emit('worksheets', undefined);
@@ -131,14 +134,62 @@ class Store {
   }
 
   // ---------- sources ----------
+  /** Sources kept in IndexedDB so they survive a reload (large ones are skipped). */
+  readonly uncached = new Set<string>();
+
+  private cache(s: DataSource) {
+    if (sourceBytes(s) > this.ws.settings.cacheLimitMb * 1024 * 1024) {
+      this.uncached.add(s.id);
+      return sourceDb.delete(s.id);
+    }
+    this.uncached.delete(s.id);
+    return sourceDb.put(s);
+  }
+
+  private upsertMeta(s: DataSource) {
+    const meta: SourceMeta = {
+      id: s.id,
+      name: s.name,
+      size: s.size,
+      rows: s.time.length,
+      columns: s.columns.map((c) => c.name),
+      start: s.time[0],
+      end: s.time[s.time.length - 1],
+    };
+    const list = (this.ws.sourceMeta ??= []);
+    const i = list.findIndex((m) => m.id === s.id);
+    if (i >= 0) list[i] = meta;
+    else list.push(meta);
+  }
+
+  /** Metadata of sources that charts reference but whose data is not loaded. */
+  missingSources(): SourceMeta[] {
+    return (this.ws.sourceMeta ?? []).filter((m) => !this.sources.has(m.id));
+  }
+
+  missingSourceFor(fileName: string): SourceMeta | undefined {
+    return this.missingSources().find((m) => m.name === fileName);
+  }
+
   addSource(s: DataSource) {
     this.sources.set(s.id, s);
-    void sourceDb.put(s);
+    this.upsertMeta(s);
+    void this.cache(s);
     this.emit('sources', undefined);
+    // a re-linked source brings its charts back
+    for (const ws of this.ws.worksheets) if (ws.widgets.some((w) => w.series.some((x) => x.sourceId === s.id))) this.emit('range', ws.id);
+  }
+
+  /** Forget a source that is referenced but not loaded. */
+  dropMissing(id: string) {
+    this.ws.sourceMeta = (this.ws.sourceMeta ?? []).filter((m) => m.id !== id);
+    this.removeSource(id);
   }
 
   removeSource(id: string) {
     this.sources.delete(id);
+    this.uncached.delete(id);
+    this.ws.sourceMeta = (this.ws.sourceMeta ?? []).filter((m) => m.id !== id);
     void sourceDb.delete(id);
     for (const ws of this.ws.worksheets) {
       let changed = false;

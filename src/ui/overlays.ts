@@ -15,7 +15,7 @@ export function notice(msg: string, timeout = 3500, kind: 'info' | 'error' = 'in
     el.classList.add('is-hiding');
     setTimeout(() => el.remove(), 200);
   };
-  el.addEventListener('click', hide);
+  if (timeout > 0) el.addEventListener('click', hide);
   noticeHost.append(el);
   if (timeout > 0) setTimeout(hide, timeout);
   return { el, set: (m) => (el.textContent = m), hide };

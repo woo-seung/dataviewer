@@ -16,7 +16,8 @@ import {
 import { store } from '../store';
 import { actions } from '../actions';
 import { formatTime } from '../data/time';
-import { clamp, formatCount, h, icon, iconButton } from '../util';
+import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
+import { sourceBytes } from '../data/db';
 import { ChartWidget } from './chartWidget';
 import { openCommandPalette, type Command } from './commandPalette';
 import { Explorer } from './explorer';
@@ -168,7 +169,8 @@ export class App {
   private updateStatus() {
     const n = store.sources.size;
     const rows = [...store.sources.values()].reduce((a, s) => a + s.time.length * s.columns.length, 0);
-    this.status.sources.textContent = `${n}개 소스 · ${formatCount(rows)} 포인트`;
+    const bytes = [...store.sources.values()].reduce((a, s) => a + sourceBytes(s), 0);
+    this.status.sources.textContent = `${n}개 소스 · ${formatCount(rows)} 포인트 · ${formatBytes(bytes)}`;
     let raw = 0;
     let shown = 0;
     let ms = 0;
@@ -260,7 +262,7 @@ export class App {
         h('li', {}, '범례 행을 다른 위젯으로 끌면 시리즈가 이동합니다 (Alt/Ctrl 누르면 복사).'),
         h('li', {}, '위젯 헤더를 끌어 배치를, 모서리를 끌어 크기를 조절합니다.'),
         h('li', {}, '차트 위 드래그 = 구간 확대, 휠 = 줌, 더블클릭 = 줌 초기화. 연동된 위젯은 시간축을 공유합니다.'),
-        h('li', {}, '보이는 구간은 M4 다운샘플링되어 WebGL로 렌더되므로 수백만 포인트도 빠르게 탐색할 수 있습니다.'),
+        h('li', {}, '보이는 구간만 M4 다운샘플링해 그리므로 수천만 포인트도 빠르게 탐색할 수 있습니다. Shift+드래그 또는 가운데 버튼 드래그로 이동합니다.'),
       ),
       h('h4', {}, '단축키'),
       t,

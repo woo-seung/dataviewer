@@ -113,6 +113,11 @@ export class PropertiesPanel {
         numInput(s.defaultMaxPoints, (v) => store.updateSettings({ defaultMaxPoints: Math.max(0, v ?? 0) }), '4000', '500'),
         '새 위젯의 시리즈당 렌더 포인트 (0 = 제한 없음)',
       ),
+      row(
+        '캐시 한도 (MB)',
+        numInput(s.cacheLimitMb, (v) => store.updateSettings({ cacheLimitMb: Math.max(0, v ?? 0) }), '400', '50'),
+        '이보다 큰 데이터는 브라우저에 저장하지 않음 (새로고침 후 파일 다시 열기)',
+      ),
     );
     this.body.append(h('div', { class: 'prop-hint' }, '위젯을 클릭하면 해당 위젯의 속성이 여기에 표시됩니다.'));
   }
@@ -215,7 +220,7 @@ export class PropertiesPanel {
         }, '보이기'),
         iconButton(Trash2, '제거', () => store.removeSeries(wsId, w.id, [s.id])),
       ),
-      h('div', { class: 'series-card-src' }, `${src?.name ?? '(없는 소스)'} › ${s.column}`),
+      h('div', { class: 'series-card-src' }, `${src?.name ?? store.ws.sourceMeta?.find((m) => m.id === s.sourceId)?.name ?? '(없는 소스)'}${src ? '' : ' (로드 안 됨)'} › ${s.column}`),
       swatches,
       h(
         'div',

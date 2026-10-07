@@ -13,7 +13,7 @@
     "gridstack": "^12.6.0",
     "lucide": "^1.52.0",
     "papaparse": "^5.5.3",
-    "plotly.js-dist-min": "^3.7.0"
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@types/papaparse": "^5.5.2",

@@ -1,4 +1,4 @@
-import Plotly from 'plotly.js-dist-min';
+import uPlot from 'uplot';
 import {
   Activity,
   Camera,
@@ -10,6 +10,7 @@ import {
   Ellipsis,
   Eye,
   EyeOff,
+  FolderOpen,
   Layers,
   Link,
   Maximize2,
@@ -25,11 +26,12 @@ import {
 import { store } from '../store';
 import type { ChartType, SeriesDrag, SeriesRef, TimeRange, WidgetState } from '../types';
 import { DRAG_MIME, DRAG_MOVE_MIME } from '../types';
-import { windowed, windowStats } from '../data/downsample';
-import { formatTime, plotlyDateToMs } from '../data/time';
+import { windowed, windowStats, type Window } from '../data/downsample';
+import { formatTime } from '../data/time';
 import { resolveColor, withAlpha } from '../palette';
 import { cssVar, downloadBlob, formatValue, h, icon, iconButton, lowerBound, nearestIndex, rafThrottle } from '../util';
 import { showMenu, type MenuItem } from './overlays';
+import { actions } from '../actions';
 
 export const CHART_TYPES: { type: ChartType; label: string; icon: IconNode }[] = [
   { type: 'line', label: '라인', icon: ChartLine },
@@ -39,26 +41,88 @@ export const CHART_TYPES: { type: ChartType; label: string; icon: IconNode }[] =
   { type: 'scatter', label: '산점도', icon: ChartScatter },
 ];
 
-interface Gd extends HTMLDivElement {
-  _fullLayout?: {
-    xaxis: Axis;
-    yaxis: Axis;
-  };
-  on?: (ev: string, fn: (e: Record<string, unknown>) => void) => void;
+type Cell = number | null | undefined;
+
+// 24h, ISO-ish tick labels; second line shows the next-larger unit when it changes (ms timestamps).
+const S = 1000;
+const M = 60 * S;
+const HR = 60 * M;
+const D = 24 * HR;
+const TIME_TICKS: uPlot.Axis.TimeValuesConfig = [
+  [365 * D, '{YYYY}', null, null, null, null, null, null, 1],
+  [28 * D, '{YYYY}-{MM}', null, null, null, null, null, null, 1],
+  [D, '{MM}-{DD}', '\n{YYYY}', null, null, null, null, null, 1],
+  [HR, '{HH}:{mm}', '\n{YYYY}-{MM}-{DD}', null, '\n{MM}-{DD}', null, null, null, 1],
+  [M, '{HH}:{mm}', '\n{YYYY}-{MM}-{DD}', null, '\n{MM}-{DD}', null, null, null, 1],
+  [S, '{HH}:{mm}:{ss}', '\n{YYYY}-{MM}-{DD} {HH}:{mm}', null, '\n{MM}-{DD} {HH}:{mm}', null, '\n{HH}:{mm}', null, 1],
+  [1, '{HH}:{mm}:{ss}.{fff}', '\n{YYYY}-{MM}-{DD} {HH}:{mm}', null, '\n{MM}-{DD} {HH}:{mm}', null, '\n{HH}:{mm}', null, 1],
+];
+
+/**
+ * Put several (x, y) series with different timestamps on one shared x array, as
+ * uPlot requires. Missing positions are `undefined` (line joins across them);
+ * NaN samples become `null` (a real gap).
+ */
+function align(wins: Window[]): { x: Float64Array; ys: Cell[][] } {
+  let total = 0;
+  for (const w of wins) total += w.x.length;
+  let x: Float64Array;
+  if (wins.length === 1) x = Float64Array.from(wins[0].x);
+  else {
+    const all = new Float64Array(total);
+    let o = 0;
+    for (const w of wins) {
+      all.set(w.x, o);
+      o += w.x.length;
+    }
+    all.sort();
+    let u = 0;
+    for (let i = 0; i < all.length; i++) if (i === 0 || all[i] !== all[i - 1]) all[u++] = all[i];
+    x = all.subarray(0, u);
+  }
+  const ys = wins.map((w) => {
+    const y: Cell[] = new Array(x.length);
+    let j = 0;
+    for (let i = 0; i < w.x.length; i++) {
+      const t = w.x[i];
+      while (x[j] < t) j++;
+      const v = w.y[i];
+      y[j] = v === v ? v : null;
+    }
+    return y;
+  });
+  return { x, ys };
 }
-interface Axis {
-  _offset: number;
-  _length: number;
-  l2p: (v: number) => number;
-  p2l: (v: number) => number;
-  type: string;
+
+/** Linear interpolation of a sparse aligned series at every x (for stacking). */
+function fillLinear(x: Float64Array, y: Cell[]): (number | null)[] {
+  const out: (number | null)[] = new Array(x.length).fill(null);
+  let prev = -1;
+  for (let i = 0; i < x.length; i++) {
+    const v = y[i];
+    if (v === undefined) continue;
+    if (v === null) {
+      prev = -1;
+      continue;
+    }
+    out[i] = v;
+    if (prev >= 0 && i - prev > 1) {
+      const pv = y[prev] as number;
+      for (let k = prev + 1; k < i; k++) out[k] = pv + ((v - pv) * (x[k] - x[prev])) / (x[i] - x[prev]);
+    }
+    prev = i;
+  }
+  return out;
 }
 
 export class ChartWidget {
   readonly el: HTMLElement;
   readonly content: HTMLElement;
-  private gd: Gd;
+  private u: uPlot | null = null;
+  private structKey = '';
+  private curRange: TimeRange = { start: 0, end: 1 };
   private plotWrap: HTMLElement;
+  private plotHost: HTMLElement;
   private legend: HTMLElement;
   private titleEl: HTMLElement;
   private typeBtn: HTMLButtonElement;
@@ -66,20 +130,19 @@ export class ChartWidget {
   private maxBtn: HTMLButtonElement;
   private badge: HTMLElement;
   private empty: HTMLElement;
+  private missing: HTMLElement;
   private vline: HTMLElement;
   private hline: HTMLElement;
   private xLabel: HTMLElement;
   private yLabel: HTMLElement;
-  private plotted = false;
-  private suppressRelayout = 0;
   private mouseY: number | null = null;
   private lastCursor: number | null = null;
   private valueCells: HTMLElement[] = [];
-  private legendRows: HTMLElement[] = [];
   private unsub: (() => void)[] = [];
   private ro: ResizeObserver;
   private maxParent: { parent: HTMLElement; next: Node | null } | null = null;
   private renderedRange: TimeRange | null = null;
+  private pan: { x: number; range: TimeRange } | null = null;
   /** Called with raw/displayed point counts after each render (for the status bar). */
   static onRendered?: (wsId: string, id: string, raw: number, shown: number, ms: number) => void;
 
@@ -116,18 +179,14 @@ export class ChartWidget {
       ),
     );
 
-    this.gd = h('div', { class: 'widget-gd' }) as Gd;
+    this.plotHost = h('div', { class: 'widget-canvas' });
     this.vline = h('div', { class: 'crosshair-v' });
     this.hline = h('div', { class: 'crosshair-h' });
     this.xLabel = h('div', { class: 'crosshair-label is-x' });
     this.yLabel = h('div', { class: 'crosshair-label is-y' });
-    this.empty = h(
-      'div',
-      { class: 'widget-empty' },
-      icon(ChartLine, 28),
-      h('div', {}, '사이드바에서 시리즈를 여기로 드래그하세요'),
-    );
-    this.plotWrap = h('div', { class: 'widget-plot' }, this.gd, this.vline, this.hline, this.xLabel, this.yLabel, this.empty);
+    this.empty = h('div', { class: 'widget-empty' }, icon(ChartLine, 28), h('div', {}, '사이드바에서 시리즈를 여기로 드래그하세요'));
+    this.missing = h('div', { class: 'widget-missing' });
+    this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
     this.legend = h('div', { class: 'widget-legend' });
     this.content = h('div', { class: 'grid-stack-item-content widget' }, header, h('div', { class: 'widget-body' }, this.plotWrap, this.legend));
     this.el = h('div', { class: 'grid-stack-item', 'gs-id': this.id, 'gs-x': st.x, 'gs-y': st.y, 'gs-w': st.w, 'gs-h': st.h }, this.content);
@@ -139,18 +198,9 @@ export class ChartWidget {
       this.moreMenu(e);
     });
     this.bindDrop();
-    this.bindCursor();
+    this.bindPointer();
 
-    this.ro = new ResizeObserver(
-      rafThrottle(() => {
-        if (!this.plotted || !this.gd.isConnected || !this.gd.offsetWidth) return;
-        this.suppressRelayout++;
-        Promise.resolve(Plotly.Plots.resize(this.gd)).finally(() => {
-          this.suppressRelayout--;
-          this.drawCursor(this.lastCursor, false);
-        });
-      }),
-    );
+    this.ro = new ResizeObserver(rafThrottle(() => this.plotWrap.isConnected && this.render()));
     this.ro.observe(this.plotWrap);
 
     this.unsub.push(
@@ -172,12 +222,17 @@ export class ChartWidget {
   destroy() {
     this.unsub.forEach((f) => f());
     this.ro.disconnect();
-    if (this.plotted) Plotly.purge(this.gd);
+    this.u?.destroy();
+    this.u = null;
     this.el.remove();
   }
 
   // ---------------- rendering ----------------
   render = rafThrottle(() => this.doRender());
+
+  private loadedSeries(st: WidgetState) {
+    return st.series.filter((s) => store.column(s.sourceId, s.column));
+  }
 
   private doRender() {
     const st = this.state;
@@ -191,175 +246,283 @@ export class ChartWidget {
     this.badge.textContent = st.linked ? '' : '독립';
     this.legend.hidden = !st.showLegend;
 
-    const series = st.series.filter((s) => store.column(s.sourceId, s.column));
-    this.empty.hidden = series.length > 0;
+    const series = this.loadedSeries(st);
+    this.renderMissing(st);
+    this.empty.hidden = st.series.length > 0;
     const range = store.widgetRange(this.wsId, st);
-    if (!series.length || !range) {
-      if (this.plotted) {
-        Plotly.purge(this.gd);
-        this.plotted = false;
+    const width = this.plotWrap.clientWidth;
+    const height = this.plotWrap.clientHeight;
+    if (!series.length || !range || width < 10 || height < 10) {
+      if (!series.length || !range) {
+        this.u?.destroy();
+        this.u = null;
+        this.structKey = '';
+        this.renderLegend([], null);
       }
-      this.renderLegend([], null);
       return;
     }
-    if (!this.gd.offsetWidth) {
-      // hidden (e.g. inactive tab) — render when the observer sees a size
-      requestAnimationFrame(() => this.gd.isConnected && this.render());
-      return;
-    }
+    this.curRange = range;
 
     const theme = store.ws.settings.theme;
     const stacked = st.type === 'stacked';
-    const maxPts = stacked ? Math.min(st.maxPoints || 1500, 1500) : st.maxPoints;
-    // scale buckets with the plot width so wide charts keep detail
-    const target = maxPts ? Math.max(maxPts, Math.round(this.gd.offsetWidth * 4)) : 0;
+    // ~4 points per pixel column keeps M4 visually lossless
+    const target = st.maxPoints ? Math.max(st.maxPoints, Math.round(width * 4)) : 0;
     let raw = 0;
-    let shown = 0;
-    const traces = series.map((s) => {
+    const wins = series.map((s) => {
       const { source, col } = store.column(s.sourceId, s.column)!;
-      const win = windowed(source.time, col.values, range.start, range.end, target, s.scale, s.offset);
-      raw += win.raw;
-      shown += win.x.length;
-      const color = resolveColor(s.color, theme);
-      const base: Record<string, unknown> = {
-        x: win.x,
-        y: win.y,
-        name: s.label,
-        visible: s.visible,
-        hoverinfo: 'none',
-        connectgaps: false,
-      };
-      const lw = st.lineWidth;
-      switch (st.type) {
-        case 'scatter':
-          return { ...base, type: 'scattergl', mode: 'markers', marker: { color, size: 5, opacity: 0.8 } };
-        case 'area':
-          return {
-            ...base,
-            type: 'scattergl',
-            mode: st.markers ? 'lines+markers' : 'lines',
-            line: { color, width: lw },
-            marker: { color, size: 6 },
-            fill: 'tozeroy',
-            fillcolor: withAlpha(color, 0.16),
-          };
-        case 'stacked':
-          return {
-            ...base,
-            type: 'scatter',
-            mode: 'lines',
-            stackgroup: 'one',
-            line: { color, width: Math.min(lw, 1.5) },
-            fillcolor: withAlpha(color, 0.55),
-          };
-        case 'step':
-          return {
-            ...base,
-            type: 'scattergl',
-            mode: st.markers ? 'lines+markers' : 'lines',
-            line: { color, width: lw, shape: 'hv' },
-            marker: { color, size: 6 },
-          };
-        default:
-          return {
-            ...base,
-            type: 'scattergl',
-            mode: st.markers ? 'lines+markers' : 'lines',
-            line: { color, width: lw },
-            marker: { color, size: 6 },
-          };
-      }
+      const w = windowed(source.time, col.values, col.blocks, range.start, range.end, target, s.scale, s.offset);
+      raw += w.raw;
+      return w;
     });
+    const { x, ys } = align(wins);
+    let data: Cell[][] = ys;
+    if (stacked) {
+      const acc = new Float64Array(x.length);
+      data = ys.map((y, i) => {
+        if (!series[i].visible) return y;
+        const f = fillLinear(x, y);
+        return f.map((v, k) => (v === null ? null : (acc[k] += v)));
+      });
+    }
 
-    const y = st.yAxis;
-    const text = cssVar('--text-muted');
-    const grid = cssVar('--chart-grid');
-    const bg = cssVar('--background-primary');
-    const zoomY = store.ws.settings.zoomY;
-    const layout = {
-      autosize: true,
-      margin: { l: 58, r: 14, t: 10, b: 30, pad: 2 },
-      paper_bgcolor: bg,
-      plot_bgcolor: bg,
-      font: { family: cssVar('--font-interface'), size: 11, color: text },
-      showlegend: false,
-      hovermode: false,
-      dragmode: store.ws.settings.dragMode,
-      xaxis: {
-        type: 'date',
-        range: [range.start, range.end],
-        gridcolor: grid,
-        linecolor: grid,
-        zeroline: false,
-        tickfont: { color: text },
-        automargin: true,
-        hoverformat: '%Y-%m-%d %H:%M:%S',
-      },
-      yaxis: {
-        type: y.log ? 'log' : 'linear',
-        autorange: y.auto,
-        range: y.auto ? undefined : y.log ? [Math.log10(Math.max(1e-12, y.min ?? 1)), Math.log10(Math.max(1e-12, y.max ?? 10))] : [y.min ?? 0, y.max ?? 1],
-        rangemode: y.includeZero ? 'tozero' : 'normal',
-        fixedrange: !zoomY,
-        gridcolor: grid,
-        linecolor: grid,
-        zerolinecolor: grid,
-        tickformat: y.siPrefix ? '~s' : '',
-        ticksuffix: y.unit ? ` ${y.unit}` : '',
-        automargin: true,
-        tickfont: { color: text },
-      },
-    };
-    const config = {
-      displayModeBar: false,
-      displaylogo: false,
-      showTips: false,
-      scrollZoom: true,
-      doubleClick: false,
-      responsive: false,
-    };
-
-    this.suppressRelayout++;
-    const first = !this.plotted;
-    Promise.resolve(Plotly.react(this.gd, traces, layout, config))
-      .then(() => {
-        if (first) this.bindPlotEvents();
-        this.plotted = true;
-        this.renderedRange = range;
-        this.drawCursor(this.lastCursor, false);
-        ChartWidget.onRendered?.(this.wsId, this.id, raw, shown, performance.now() - t0);
-      })
-      .catch((e: unknown) => console.error('plot failed', e))
-      .finally(() => this.suppressRelayout--);
-
+    const key = JSON.stringify([
+      st.type,
+      series.map((s) => [s.id, s.color, s.visible, s.label]),
+      theme,
+      st.yAxis,
+      st.lineWidth,
+      st.markers,
+      store.ws.settings.dragMode,
+      store.ws.settings.zoomY,
+    ]);
+    const aligned = [x as unknown as number[], ...(data as number[][])] as uPlot.AlignedData;
+    if (!this.u || key !== this.structKey) {
+      this.u?.destroy();
+      this.u = new uPlot(this.options(st, series, width, height), aligned, this.plotHost);
+      this.structKey = key;
+    } else {
+      if (this.u.width !== width || this.u.height !== height) this.u.setSize({ width, height });
+      this.u.setData(aligned);
+    }
+    this.renderedRange = range;
+    this.drawCursor(this.lastCursor, false);
+    ChartWidget.onRendered?.(this.wsId, this.id, raw, x.length * series.length, performance.now() - t0);
     this.renderLegend(series, range);
   }
 
-  private bindPlotEvents() {
-    this.gd.on?.('plotly_relayout', (ev) => {
-      if (this.suppressRelayout > 0) return;
-      const st = this.state;
-      const x0 = ev['xaxis.range[0]'] ?? (ev['xaxis.range'] as unknown[] | undefined)?.[0];
-      const x1 = ev['xaxis.range[1]'] ?? (ev['xaxis.range'] as unknown[] | undefined)?.[1];
-      const y0 = ev['yaxis.range[0]'] ?? (ev['yaxis.range'] as unknown[] | undefined)?.[0];
-      const y1 = ev['yaxis.range[1]'] ?? (ev['yaxis.range'] as unknown[] | undefined)?.[1];
-      if (y0 !== undefined && y1 !== undefined) {
-        const lg = st.yAxis.log;
-        const a = lg ? 10 ** Number(y0) : Number(y0);
-        const b = lg ? 10 ** Number(y1) : Number(y1);
-        st.yAxis = { ...st.yAxis, auto: false, min: Math.min(a, b), max: Math.max(a, b) };
-        if (x0 === undefined) store.updateWidget(this.wsId, this.id, {});
-      } else if (ev['yaxis.autorange']) {
-        st.yAxis = { ...st.yAxis, auto: true };
-      }
-      if (ev['xaxis.autorange']) this.setRange(null);
-      else if (x0 !== undefined && x1 !== undefined) {
-        const a = plotlyDateToMs(x0);
-        const b = plotlyDateToMs(x1);
-        if (Number.isFinite(a) && Number.isFinite(b) && b > a) this.setRange({ start: a, end: b });
+  private options(st: WidgetState, series: SeriesRef[], width: number, height: number): uPlot.Options {
+    const theme = store.ws.settings.theme;
+    const text = cssVar('--text-muted');
+    const grid = cssVar('--chart-grid');
+    const font = `11px ${cssVar('--font-interface')}`;
+    const y = st.yAxis;
+    const zoomMode = store.ws.settings.dragMode === 'zoom';
+    const stacked = st.type === 'stacked';
+    const stepped = uPlot.paths.stepped!({ align: 1 });
+    const fmtY = (v: number) => formatValue(v, y.siPrefix, y.unit);
+
+    const sOpts: uPlot.Series[] = series.map((s, i) => {
+      const color = resolveColor(s.color, theme);
+      const base: uPlot.Series = {
+        label: s.label,
+        show: s.visible,
+        stroke: color,
+        width: st.lineWidth,
+        spanGaps: false,
+        points: { show: st.markers, size: 5, stroke: color, fill: color },
+      };
+      switch (st.type) {
+        case 'scatter':
+          return { ...base, paths: () => null, points: { show: true, size: 4, width: 0, stroke: color, fill: withAlpha(color, 0.85), space: 0 } };
+        case 'area':
+          return { ...base, fill: withAlpha(color, 0.16), fillTo: (u: uPlot) => (y.log ? (u.scales.y.min ?? 0) : 0) };
+        case 'step':
+          return { ...base, paths: stepped };
+        case 'stacked': {
+          // first visible layer fills to zero, the rest fill via bands
+          const firstVisible = series.findIndex((x) => x.visible) === i;
+          return { ...base, width: Math.min(st.lineWidth, 1.5), fill: firstVisible ? withAlpha(color, 0.55) : undefined };
+        }
+        default:
+          return base;
       }
     });
-    this.gd.addEventListener('dblclick', () => this.resetZoom());
+
+    const bands: uPlot.Band[] = [];
+    if (stacked) {
+      let below = -1;
+      series.forEach((s, i) => {
+        if (!s.visible) return;
+        if (below >= 0) bands.push({ series: [i + 1, below + 1], fill: withAlpha(resolveColor(s.color, theme), 0.55) });
+        below = i;
+      });
+    }
+
+    const yRange: uPlot.Scale.Range = (_u, min, max) => {
+      if (!y.auto && y.min !== null && y.max !== null && y.max > y.min) return [y.min, y.max];
+      if (min === null || max === null || !Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];
+      if (y.log) return uPlot.rangeLog(Math.max(min, 1e-12), Math.max(max, 1e-12), 10, true);
+      let lo = min;
+      let hi = max;
+      if (y.includeZero) {
+        lo = Math.min(lo, 0);
+        hi = Math.max(hi, 0);
+      }
+      if (lo === hi) {
+        const d = Math.abs(lo) * 0.1 || 1;
+        lo -= d;
+        hi += d;
+      }
+      const pad = (hi - lo) * 0.06;
+      return [y.includeZero && lo === 0 ? 0 : lo - pad, y.includeZero && hi === 0 ? 0 : hi + pad];
+    };
+
+    return {
+      width,
+      height,
+      ms: 1,
+      tzDate: (ts) => uPlot.tzDate(new Date(ts), 'Etc/UTC'),
+      padding: [10, 14, 0, 4],
+      legend: { show: false },
+      focus: { alpha: 0.25 },
+      scales: {
+        x: { time: true, auto: false, range: () => [this.curRange.start, this.curRange.end] },
+        y: { distr: y.log ? 3 : 1, auto: true, range: yRange },
+      },
+      axes: [
+        { stroke: text, font, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1, size: 4 }, space: 80, values: TIME_TICKS },
+        {
+          stroke: text,
+          font,
+          grid: { stroke: grid, width: 1 },
+          ticks: { show: false },
+          space: 28,
+          values: (_u, splits) => splits.map(fmtY),
+          size: (u, values, axisIdx) => {
+            if (!values?.length) return 40;
+            u.ctx.font = u.axes[axisIdx].font![0] as unknown as string;
+            const w = Math.max(...values.map((v) => u.ctx.measureText(v).width));
+            return Math.ceil(w / devicePixelRatio) + 14;
+          },
+        },
+      ],
+      series: [{}, ...sOpts],
+      bands,
+      cursor: {
+        x: false,
+        y: false,
+        points: { show: false },
+        focus: { prox: -1 },
+        drag: { x: zoomMode, y: zoomMode && store.ws.settings.zoomY, uni: store.ws.settings.zoomY ? 20 : Infinity, setScale: false },
+        bind: {
+          dblclick: () => () => {
+            this.resetZoom();
+            return null;
+          },
+          mousedown: (_u, _t, handler) => (e: MouseEvent) => {
+            if (!zoomMode || e.button === 1 || e.shiftKey) {
+              this.startPan(e);
+              return null;
+            }
+            return handler(e);
+          },
+        },
+      },
+      hooks: {
+        setSelect: [
+          (u) => {
+            const sel = u.select;
+            if (sel.width > 4) {
+              const a = u.posToVal(sel.left, 'x');
+              const b = u.posToVal(sel.left + sel.width, 'x');
+              if (b > a) this.setRange({ start: a, end: b });
+            }
+            if (store.ws.settings.zoomY && sel.height > 4 && sel.height < u.over.clientHeight - 1) {
+              const top = u.posToVal(sel.top, 'y');
+              const bot = u.posToVal(sel.top + sel.height, 'y');
+              const st2 = this.state;
+              store.updateWidget(this.wsId, this.id, { yAxis: { ...st2.yAxis, auto: false, min: Math.min(top, bot), max: Math.max(top, bot) } });
+            }
+            u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+          },
+        ],
+      },
+    };
+  }
+
+  private renderMissing(st: WidgetState) {
+    const gone = st.series.filter((s) => !store.column(s.sourceId, s.column));
+    this.missing.hidden = !gone.length;
+    if (!gone.length) return;
+    const names = [...new Set(gone.map((s) => store.ws.sourceMeta?.find((m) => m.id === s.sourceId)?.name ?? '(삭제된 소스)'))];
+    this.missing.replaceChildren(
+      h('span', {}, `데이터 없음: ${names.join(', ')}`),
+      h('button', { type: 'button', onclick: (() => void actions.openCsv()) as EventListener }, icon(FolderOpen, 14), ' 파일 다시 열기'),
+    );
+  }
+
+  // ---------------- interaction ----------------
+  private bindPointer() {
+    const move = rafThrottle((cx: number, cy: number) => {
+      const u = this.u;
+      if (!u) return;
+      const r = u.over.getBoundingClientRect();
+      const px = cx - r.left;
+      const py = cy - r.top;
+      if (px < 0 || px > r.width || py < 0 || py > r.height) {
+        this.mouseY = null;
+        store.cursor(this.wsId, null, this.id);
+        return;
+      }
+      this.mouseY = py;
+      store.cursor(this.wsId, u.posToVal(px, 'x'), this.id);
+    });
+    this.plotHost.addEventListener('mousemove', (e) => move(e.clientX, e.clientY));
+    this.plotHost.addEventListener('mouseleave', () => {
+      this.mouseY = null;
+      setTimeout(() => store.cursor(this.wsId, null, this.id), 0);
+    });
+    this.plotHost.addEventListener(
+      'wheel',
+      (e) => {
+        const u = this.u;
+        if (!u || !(e.target as HTMLElement).closest('.u-over')) return;
+        e.preventDefault();
+        const r = u.over.getBoundingClientRect();
+        const c = u.posToVal(e.clientX - r.left, 'x');
+        const f = Math.pow(1.0015, Math.max(-300, Math.min(300, e.deltaY * (e.deltaMode === 1 ? 33 : 1))));
+        const { start, end } = this.curRange;
+        if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+          const d = (end - start) * (e.deltaX || e.deltaY) * 0.0015;
+          this.setRange({ start: start + d, end: end + d });
+          return;
+        }
+        this.setRange({ start: c - (c - start) * f, end: c + (end - c) * f });
+      },
+      { passive: false },
+    );
+  }
+
+  private startPan(e: MouseEvent) {
+    e.preventDefault();
+    this.pan = { x: e.clientX, range: { ...this.curRange } };
+    this.plotHost.classList.add('is-panning');
+    const move = rafThrottle((cx: number) => {
+      const u = this.u;
+      if (!u || !this.pan) return;
+      const span = this.pan.range.end - this.pan.range.start;
+      const dt = ((cx - this.pan.x) / u.over.clientWidth) * span;
+      this.setRange({ start: this.pan.range.start - dt, end: this.pan.range.end - dt });
+    });
+    const onMove = (ev: MouseEvent) => move(ev.clientX);
+    const onUp = () => {
+      this.pan = null;
+      this.plotHost.classList.remove('is-panning');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   }
 
   private setRange(r: TimeRange | null) {
@@ -378,7 +541,6 @@ export class ChartWidget {
   // ---------------- legend table ----------------
   private renderLegend(series: SeriesRef[], range: TimeRange | null) {
     this.valueCells = [];
-    this.legendRows = [];
     if (!series.length || !range) {
       this.legend.replaceChildren();
       return;
@@ -390,7 +552,7 @@ export class ChartWidget {
     const tbody = h('tbody');
     series.forEach((s, i) => {
       const { source, col } = store.column(s.sourceId, s.column)!;
-      const stats = windowStats(source.time, col.values, range.start, range.end, s.scale, s.offset);
+      const stats = windowStats(source.time, col.values, col.blocks, range.start, range.end, s.scale, s.offset);
       const color = resolveColor(s.color, theme);
       const swatch = h('button', {
         class: `legend-swatch ${s.visible ? '' : 'is-off'}`,
@@ -423,15 +585,14 @@ export class ChartWidget {
         e.dataTransfer!.setData(DRAG_MOVE_MIME, '1');
         e.dataTransfer!.effectAllowed = 'copyMove';
       });
-      row.addEventListener('mouseenter', () => this.highlight(i));
-      row.addEventListener('mouseleave', () => this.highlight(-1));
+      row.addEventListener('mouseenter', () => s.visible && this.u?.setSeries(i + 1, { focus: true }));
+      row.addEventListener('mouseleave', () => this.u?.setSeries(null, { focus: false }));
       row.addEventListener('dblclick', () => store.select(this.id));
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
         this.seriesMenu(s, e);
       });
-      this.legendRows.push(row);
       tbody.append(row);
     });
     const head = h(
@@ -443,38 +604,7 @@ export class ChartWidget {
     this.updateCursorValues(this.lastCursor);
   }
 
-  private highlight(i: number) {
-    if (!this.plotted) return;
-    const n = (this.gd as unknown as { data?: unknown[] }).data?.length ?? 0;
-    if (!n) return;
-    const op = Array.from({ length: n }, (_, k) => (i < 0 || k === i ? 1 : 0.2));
-    this.suppressRelayout++;
-    Promise.resolve(Plotly.restyle(this.gd, { opacity: op })).finally(() => this.suppressRelayout--);
-  }
-
   // ---------------- crosshair ----------------
-  private bindCursor() {
-    const move = rafThrottle((cx: number, cy: number) => {
-      const fl = this.gd._fullLayout;
-      if (!fl || !this.plotted) return;
-      const r = this.gd.getBoundingClientRect();
-      const px = cx - r.left - fl.xaxis._offset;
-      const py = cy - r.top - fl.yaxis._offset;
-      if (px < 0 || px > fl.xaxis._length || py < 0 || py > fl.yaxis._length) {
-        this.mouseY = null;
-        store.cursor(this.wsId, null, this.id);
-        return;
-      }
-      this.mouseY = py;
-      store.cursor(this.wsId, fl.xaxis.p2l(px), this.id);
-    });
-    this.gd.addEventListener('mousemove', (e) => move(e.clientX, e.clientY));
-    this.gd.addEventListener('mouseleave', () => {
-      this.mouseY = null;
-      setTimeout(() => store.cursor(this.wsId, null, this.id), 0);
-    });
-  }
-
   private onCursor(c: { ws: string; x: number | null; from: string | null }) {
     if (c.ws !== this.wsId) return;
     const st = this.state;
@@ -490,46 +620,48 @@ export class ChartWidget {
 
   private drawCursor(x: number | null, own: boolean) {
     this.lastCursor = x;
-    const fl = this.gd._fullLayout;
-    const sheet = store.sheet(this.wsId);
-    const showLines = sheet?.crosshair !== false;
+    const u = this.u;
+    const showLines = store.sheet(this.wsId)?.crosshair !== false;
     const hide = () => {
       this.vline.style.display = 'none';
       this.hline.style.display = 'none';
       this.xLabel.style.display = 'none';
       this.yLabel.style.display = 'none';
     };
-    if (x === null || !fl || !this.plotted) {
+    if (x === null || !u) {
       hide();
       this.updateCursorValues(null);
       return;
     }
-    const xa = fl.xaxis;
-    const ya = fl.yaxis;
-    const px = xa.l2p(x);
-    if (px < 0 || px > xa._length) {
+    const W = u.over.clientWidth;
+    const H = u.over.clientHeight;
+    const px = u.valToPos(x, 'x');
+    if (px < 0 || px > W) {
       hide();
       this.updateCursorValues(null);
       return;
     }
     this.updateCursorValues(x);
     if (!showLines) return hide();
-    const left = xa._offset + px;
-    Object.assign(this.vline.style, { display: 'block', left: `${left}px`, top: `${ya._offset}px`, height: `${ya._length}px` });
+    // overlay lives in plotWrap; translate from the plotting area's origin
+    const wr = this.plotWrap.getBoundingClientRect();
+    const or = u.over.getBoundingClientRect();
+    const ox = or.left - wr.left;
+    const oy = or.top - wr.top;
+    const left = ox + px;
+    Object.assign(this.vline.style, { display: 'block', left: `${left}px`, top: `${oy}px`, height: `${H}px` });
     this.xLabel.textContent = formatTime(x);
     const lw = this.xLabel.offsetWidth || 120;
     Object.assign(this.xLabel.style, {
       display: 'block',
-      left: `${Math.min(Math.max(left - lw / 2, xa._offset), xa._offset + xa._length - lw)}px`,
-      top: `${ya._offset + ya._length + 2}px`,
+      left: `${Math.min(Math.max(left - lw / 2, ox), ox + W - lw)}px`,
+      top: `${oy + H + 2}px`,
     });
     if (own && this.mouseY !== null) {
-      const top = ya._offset + this.mouseY;
-      Object.assign(this.hline.style, { display: 'block', top: `${top}px`, left: `${xa._offset}px`, width: `${xa._length}px` });
-      let v = ya.p2l(this.mouseY);
-      if (ya.type === 'log') v = 10 ** v;
-      this.yLabel.textContent = formatValue(v, this.state.yAxis.siPrefix, this.state.yAxis.unit);
-      Object.assign(this.yLabel.style, { display: 'block', top: `${top - 9}px`, left: `${xa._offset + 2}px` });
+      const top = oy + this.mouseY;
+      Object.assign(this.hline.style, { display: 'block', top: `${top}px`, left: `${ox}px`, width: `${W}px` });
+      this.yLabel.textContent = formatValue(u.posToVal(this.mouseY, 'y'), this.state.yAxis.siPrefix, this.state.yAxis.unit);
+      Object.assign(this.yLabel.style, { display: 'block', top: `${top - 9}px`, left: `${ox + 2}px` });
     } else {
       this.hline.style.display = 'none';
       this.yLabel.style.display = 'none';
@@ -539,8 +671,7 @@ export class ChartWidget {
   private updateCursorValues(x: number | null) {
     const st = this.state;
     if (!st) return;
-    const series = st.series.filter((s) => store.column(s.sourceId, s.column));
-    series.forEach((s, i) => {
+    this.loadedSeries(st).forEach((s, i) => {
       const cell = this.valueCells[i];
       if (!cell) return;
       if (x === null) {
@@ -692,24 +823,39 @@ export class ChartWidget {
     );
   }
 
+  /** PNG of the chart canvas with a title and legend row, at device resolution. */
   async snapshot() {
-    if (!this.plotted) return;
-    this.suppressRelayout++;
-    try {
-      await Plotly.relayout(this.gd, {
-        showlegend: true,
-        legend: { orientation: 'h', y: -0.15, font: { color: cssVar('--text-normal') } },
-        title: { text: this.state.title, font: { color: cssVar('--text-normal'), size: 14 } },
-        'margin.t': 36,
-      });
-      const w = Math.max(this.gd.offsetWidth, 900);
-      const url: string = await Plotly.toImage(this.gd, { format: 'png', width: w, height: Math.round(w * 0.5), scale: 2 });
-      const blob = await (await fetch(url)).blob();
-      downloadBlob(blob, `${this.state.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`);
-    } finally {
-      await Plotly.relayout(this.gd, { showlegend: false, title: { text: '' }, 'margin.t': 10 });
-      this.suppressRelayout--;
+    const u = this.u;
+    if (!u) return;
+    const st = this.state;
+    const dpr = devicePixelRatio || 1;
+    const src = u.ctx.canvas;
+    const head = 34 * dpr;
+    const foot = 30 * dpr;
+    const c = document.createElement('canvas');
+    c.width = src.width;
+    c.height = src.height + head + foot;
+    const g = c.getContext('2d')!;
+    const fontFam = cssVar('--font-interface');
+    g.fillStyle = cssVar('--background-primary');
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = cssVar('--text-normal');
+    g.font = `600 ${14 * dpr}px ${fontFam}`;
+    g.textBaseline = 'middle';
+    g.fillText(st.title, 12 * dpr, head / 2);
+    g.drawImage(src, 0, head);
+    g.font = `${12 * dpr}px ${fontFam}`;
+    let x = 12 * dpr;
+    const y = head + src.height + foot / 2;
+    for (const s of this.loadedSeries(st).filter((s) => s.visible)) {
+      g.fillStyle = resolveColor(s.color, store.ws.settings.theme);
+      g.fillRect(x, y - 5 * dpr, 10 * dpr, 10 * dpr);
+      g.fillStyle = cssVar('--text-muted');
+      g.fillText(s.label, x + 15 * dpr, y);
+      x += g.measureText(s.label).width + 32 * dpr;
     }
+    const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/png'));
+    if (blob) downloadBlob(blob, `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`);
   }
 
   exportCsv() {

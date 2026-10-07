@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 import type { DataSource } from '../types';
-import { parseNumber, parseTime, type TimeFormat } from './time';
+import { detectTimeFormat, parseNumber, parseTime, type TimeFormat } from './time';
 import type { ParseRequest, WorkerMessage } from './csvWorker';
 import { uid } from '../util';
 
@@ -11,6 +11,20 @@ export interface CsvPreview {
   rows: string[][];
   timeColumn: number;
   numericColumns: number[];
+  /** Rows in the whole file, extrapolated from the preview's line density. */
+  estimatedRows: number;
+  /** No quote characters in the preview (enables the byte-level parser). */
+  noQuotes: boolean;
+}
+
+/** Concrete time format for the chosen column (falls back to per-cell auto). */
+export function guessFormat(p: CsvPreview): TimeFormat {
+  return detectTimeFormat(p.rows.map((r) => r[p.timeColumn] ?? ''));
+}
+
+/** Bytes of RAM the import will need for its arrays. */
+export function estimateBytes(rows: number, columns: number, compact: boolean): number {
+  return rows * (8 + columns * (compact ? 4 : 8));
 }
 
 const TIME_NAME_RE = /^(time|date|datetime|timestamp|ts|t|epoch|시간|일시|날짜|시각)$|time|date|stamp/i;
@@ -30,7 +44,11 @@ function looksTime(values: string[]): boolean {
 }
 
 export async function previewCsv(file: File, delimiter = ''): Promise<CsvPreview> {
-  const text = await file.slice(0, 256 * 1024).text();
+  const sliceLen = Math.min(file.size, 256 * 1024);
+  const text = await file.slice(0, sliceLen).text();
+  let lines = 0;
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) lines++;
+  const estimatedRows = sliceLen >= file.size ? lines + 1 : Math.ceil((lines / sliceLen) * file.size);
   const res = Papa.parse<string[]>(text, { delimiter: delimiter || undefined, preview: 60, skipEmptyLines: true });
   const all = res.data.filter((r) => r.length > 0);
   if (!all.length) throw new Error('파일이 비어 있습니다.');
@@ -51,19 +69,34 @@ export async function previewCsv(file: File, delimiter = ''): Promise<CsvPreview
   if (timeColumn < 0) timeColumn = header.findIndex((_, i) => looksTime(colValues(i)));
   if (timeColumn < 0) timeColumn = 0;
   const numericColumns = header.map((_, i) => i).filter((i) => i !== timeColumn && looksNumeric(colValues(i)));
-  return { delimiter: res.meta.delimiter, hasHeader, header, rows: rows.slice(0, 30), timeColumn, numericColumns };
+  return { delimiter: res.meta.delimiter, hasHeader, header, rows: rows.slice(0, 30), timeColumn, numericColumns, estimatedRows, noQuotes: !text.includes('"') };
 }
 
-export function importCsv(
-  file: File,
-  opts: { delimiter: string; hasHeader: boolean; timeColumn: number; timeFormat: TimeFormat; columns: number[]; header: string[] },
-  onProgress?: (fraction: number) => void,
-): Promise<DataSource> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./csvWorker.ts', import.meta.url), { type: 'module' });
+export interface ImportOptions {
+  delimiter: string;
+  hasHeader: boolean;
+  timeColumn: number;
+  timeFormat: TimeFormat;
+  columns: number[];
+  header: string[];
+  compact: boolean;
+  estimatedRows: number;
+  noQuotes: boolean;
+}
+
+export interface ImportJob {
+  promise: Promise<DataSource>;
+  cancel: () => void;
+}
+
+export function importCsv(file: File, opts: ImportOptions, onProgress?: (fraction: number, rows: number) => void, id = uid('src')): ImportJob {
+  const worker = new Worker(new URL('./csvWorker.ts', import.meta.url), { type: 'module' });
+  let rejectFn: (e: Error) => void = () => undefined;
+  const promise = new Promise<DataSource>((resolve, reject) => {
+    rejectFn = reject;
     worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
       const m = ev.data;
-      if (m.type === 'progress') onProgress?.(m.total ? m.loaded / m.total : 0);
+      if (m.type === 'progress') onProgress?.(m.total ? m.loaded / m.total : 0, m.rows);
       else if (m.type === 'error') {
         worker.terminate();
         reject(new Error(m.message));
@@ -74,7 +107,7 @@ export function importCsv(
           return;
         }
         resolve({
-          id: uid('src'),
+          id,
           name: file.name,
           size: file.size,
           importedAt: Date.now(),
@@ -96,9 +129,19 @@ export function importCsv(
       timeFormat: opts.timeFormat,
       columns: opts.columns,
       columnNames: opts.columns.map((i) => opts.header[i]),
+      compact: opts.compact,
+      estimatedRows: opts.estimatedRows,
+      noQuotes: opts.noQuotes,
     };
     worker.postMessage(req);
   });
+  return {
+    promise,
+    cancel: () => {
+      worker.terminate();
+      rejectFn(new DOMException('취소됨', 'AbortError'));
+    },
+  };
 }
 
 /** Synthetic multi-sensor dataset so the app has something to show on first run. */

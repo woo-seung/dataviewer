@@ -1544,3 +1544,83 @@ label.checkbox-container::after {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============ uPlot ============ */
+.widget-canvas {
+  position: absolute;
+  inset: 0;
+}
+.widget-canvas .u-over {
+  cursor: crosshair;
+}
+.widget-canvas.is-panning .u-over {
+  cursor: grabbing;
+}
+.u-select {
+  background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.14);
+  border-left: 1px solid hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.6);
+  border-right: 1px solid hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.6);
+}
+.widget-missing {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--background-modifier-error);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  max-width: calc(100% - 20px);
+  white-space: nowrap;
+}
+.widget-missing span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.widget-missing button {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.tree-item-self.is-missing {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.tree-item-self.is-missing .tree-item-flair {
+  font-style: normal;
+  color: var(--text-accent);
+}
+.notice-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  margin: 8px 0 6px;
+  overflow: hidden;
+  min-width: 260px;
+}
+.notice-progress > div {
+  height: 100%;
+  width: 0;
+  background: var(--interactive-accent);
+  transition: width 0.15s;
+}
+.notice-cancel {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+.import-relink {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-active-hover);
+  color: var(--text-accent);
+  font-size: var(--font-ui-small);
+}
+.setting-item-description.is-warning {
+  color: var(--text-error);
+}

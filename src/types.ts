@@ -1,3 +1,5 @@
+import type { Blocks } from './data/blocks';
+
 /** A parsed CSV file: one shared time axis and N numeric columns. */
 export interface DataSource {
   id: string;
@@ -13,7 +15,10 @@ export interface DataSource {
 
 export interface SourceColumn {
   name: string;
-  values: Float64Array;
+  /** Float32 when imported in compact mode (half the memory). */
+  values: Float64Array | Float32Array;
+  /** Summary index for fast window stats / downsampling (rebuilt on load, never persisted). */
+  blocks?: Blocks;
   /** Precomputed over the whole column (NaN skipped). */
   min: number;
   max: number;
@@ -92,11 +97,29 @@ export interface Settings {
   dragMode: 'zoom' | 'pan';
   /** Allow box-zoom / wheel-zoom on the value axis too. */
   zoomY: boolean;
+  /** Sources larger than this (MB of arrays) are not cached in IndexedDB. */
+  cacheLimitMb: number;
+}
+
+/**
+ * Lightweight description of a source kept in the workspace, so charts survive
+ * a reload even when the data itself was too large to cache: re-opening the
+ * same file re-links it by name.
+ */
+export interface SourceMeta {
+  id: string;
+  name: string;
+  size: number;
+  rows: number;
+  columns: string[];
+  start: number;
+  end: number;
 }
 
 export interface Workspace {
   version: 1;
   worksheets: Worksheet[];
+  sourceMeta?: SourceMeta[];
   activeId: string;
   selectedWidgetId: string | null;
   settings: Settings;
