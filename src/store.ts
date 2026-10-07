@@ -23,6 +23,8 @@ type Events = {
   selection: string | null;
   settings: void;
   cursor: { ws: string; x: number | null; from: string | null };
+  /** work folder / workspace file / dirty state changed */
+  project: void;
 };
 
 type Handler<T> = (payload: T) => void;
@@ -78,6 +80,9 @@ class Store {
   private handlers = new Map<keyof Events, Set<Handler<never>>>();
   private history = new Map<string, History>();
 
+  /** Hook for the project layer (dirty tracking). */
+  onChange?: (ev: keyof Events) => void;
+
   constructor() {
     this.ws = this.load();
   }
@@ -90,7 +95,10 @@ class Store {
   }
   emit<K extends keyof Events>(ev: K, payload: Events[K]) {
     this.handlers.get(ev)?.forEach((fn) => (fn as Handler<Events[K]>)(payload));
-    if (ev !== 'cursor' && ev !== 'selection') this.save();
+    if (ev !== 'cursor' && ev !== 'selection' && ev !== 'project') {
+      this.save();
+      this.onChange?.(ev);
+    }
   }
 
   // ---------- persistence ----------
@@ -119,14 +127,14 @@ class Store {
     }
   }, 300);
 
-  replaceWorkspace(w: Workspace, sources: DataSource[]) {
+  replaceWorkspace(w: Workspace, sources: DataSource[], cacheInDb = true) {
     this.sources = new Map(sources.map((s) => [s.id, s]));
     this.ws = { ...w, settings: { ...DEFAULT_SETTINGS, ...w.settings } };
     if (!this.ws.worksheets.length) this.ws.worksheets.push(newWorksheet('Worksheet 1'));
     if (!this.ws.worksheets.some((s) => s.id === this.ws.activeId)) this.ws.activeId = this.ws.worksheets[0].id;
     this.history.clear();
     for (const src of sources) this.upsertMeta(src);
-    void sourceDb.clear().then(() => Promise.all(sources.map((s) => this.cache(s))));
+    void sourceDb.clear().then(() => (cacheInDb ? Promise.all(sources.map((s) => this.cache(s))) : []));
     this.emit('sources', undefined);
     this.emit('settings', undefined);
     this.emit('worksheets', undefined);
@@ -155,6 +163,9 @@ class Store {
       columns: s.columns.map((c) => c.name),
       start: s.time[0],
       end: s.time[s.time.length - 1],
+      path: s.path,
+      lastModified: s.lastModified,
+      import: s.import,
     };
     const list = (this.ws.sourceMeta ??= []);
     const i = list.findIndex((m) => m.id === s.id);
@@ -167,8 +178,14 @@ class Store {
     return (this.ws.sourceMeta ?? []).filter((m) => !this.sources.has(m.id));
   }
 
-  missingSourceFor(fileName: string): SourceMeta | undefined {
-    return this.missingSources().find((m) => m.name === fileName);
+  missingSourceFor(fileName: string, path?: string | null): SourceMeta | undefined {
+    const missing = this.missingSources();
+    return (path ? missing.find((m) => m.path === path) : undefined) ?? missing.find((m) => m.name === fileName);
+  }
+
+  sourceByPath(path: string): DataSource | undefined {
+    for (const s of this.sources.values()) if (s.path === path) return s;
+    return undefined;
   }
 
   addSource(s: DataSource) {
@@ -353,8 +370,10 @@ class Store {
   setLayout(wsId: string, id: string, l: { x: number; y: number; w: number; h: number }) {
     const w = this.widget(wsId, id);
     if (!w) return;
+    if (w.x === l.x && w.y === l.y && w.w === l.w && w.h === l.h) return;
     Object.assign(w, l);
     this.save();
+    this.onChange?.('widgets');
   }
 
   select(id: string | null) {

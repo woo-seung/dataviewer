@@ -1,4 +1,15 @@
 import type { Blocks } from './data/blocks';
+import type { TimeFormat } from './data/time';
+
+/** How a CSV was imported, by column name, so it can be re-imported without asking. */
+export interface ImportSettings {
+  delimiter: string;
+  hasHeader: boolean;
+  timeColumn: string;
+  timeFormat: TimeFormat;
+  columns: string[];
+  compact: boolean;
+}
 
 /** A parsed CSV file: one shared time axis and N numeric columns. */
 export interface DataSource {
@@ -11,13 +22,18 @@ export interface DataSource {
   /** Epoch milliseconds, sorted ascending. */
   time: Float64Array;
   columns: SourceColumn[];
+  /** Path of the original CSV relative to the work folder root, when known. */
+  path?: string;
+  /** Original file's mtime, used to detect a changed CSV. */
+  lastModified?: number;
+  import?: ImportSettings;
 }
 
 export interface SourceColumn {
   name: string;
   /** Float32 when imported in compact mode (half the memory). */
   values: Float64Array | Float32Array;
-  /** Summary index for fast window stats / downsampling (rebuilt on load, never persisted). */
+  /** Summary index for fast window stats / downsampling (saved in .chronos files). */
   blocks?: Blocks;
   /** Precomputed over the whole column (NaN skipped). */
   min: number;
@@ -114,12 +130,19 @@ export interface SourceMeta {
   columns: string[];
   start: number;
   end: number;
+  path?: string;
+  /** Path relative to the workspace file (as stored in a .chronos file). */
+  rel?: string;
+  lastModified?: number;
+  import?: ImportSettings;
 }
 
 export interface Workspace {
   version: 1;
   worksheets: Worksheet[];
   sourceMeta?: SourceMeta[];
+  /** Linked workspace file (root-relative path inside the work folder). */
+  file?: { name: string; path?: string };
   activeId: string;
   selectedWidgetId: string | null;
   settings: Settings;

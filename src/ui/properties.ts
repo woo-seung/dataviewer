@@ -114,9 +114,9 @@ export class PropertiesPanel {
         '새 위젯의 시리즈당 렌더 포인트 (0 = 제한 없음)',
       ),
       row(
-        '캐시 한도 (MB)',
+        '브라우저 캐시 한도 (MB)',
         numInput(s.cacheLimitMb, (v) => store.updateSettings({ cacheLimitMb: Math.max(0, v ?? 0) }), '400', '50'),
-        '이보다 큰 데이터는 브라우저에 저장하지 않음 (새로고침 후 파일 다시 열기)',
+        '새로고침 시 빠른 복원용 브라우저 사본. 워크스페이스 파일에는 크기와 관계없이 항상 저장됨',
       ),
     );
     this.body.append(h('div', { class: 'prop-hint' }, '위젯을 클릭하면 해당 위젯의 속성이 여기에 표시됩니다.'));

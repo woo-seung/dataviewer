@@ -1,7 +1,7 @@
 import { estimateBytes, guessFormat, importCsv, previewCsv, type CsvPreview } from '../data/csv';
 import { formatTime, parseTime, type TimeFormat } from '../data/time';
 import { store } from '../store';
-import type { DataSource } from '../types';
+import type { DataSource, ImportSettings } from '../types';
 import { formatBytes, formatCount, h } from '../util';
 import { button, modal, notice } from './overlays';
 
@@ -44,8 +44,13 @@ function setting(name: string, desc: string | HTMLElement, control: HTMLElement)
   );
 }
 
+/** Where the file came from inside the work folder (enables relative-path saving). */
+export interface FileOrigin {
+  path?: string | null;
+}
+
 /** Ask for import options; resolves with the imported source (or null on cancel). */
-export async function openImportDialog(file: File, quick = false): Promise<DataSource | null> {
+export async function openImportDialog(file: File, quick = false, origin: FileOrigin = {}): Promise<DataSource | null> {
   let preview: CsvPreview;
   try {
     preview = await previewCsv(file);
@@ -53,7 +58,7 @@ export async function openImportDialog(file: File, quick = false): Promise<DataS
     notice(`${file.name}: ${(e as Error).message}`, 6000, 'error');
     return null;
   }
-  const relink = store.missingSourceFor(file.name);
+  const relink = store.missingSourceFor(file.name, origin.path);
   let selected = new Set(preview.numericColumns);
   if (relink) {
     // re-opening a file whose charts survived a reload: keep the same columns
@@ -63,7 +68,7 @@ export async function openImportDialog(file: File, quick = false): Promise<DataS
   }
   const defaultPrecision = (): Precision =>
     estimateBytes(preview.estimatedRows, selected.size, false) > COMPACT_THRESHOLD ? 'f32' : 'f64';
-  if (quick && selected.size) return runImport(file, preview, guessFormat(preview), selected, defaultPrecision() === 'f32', relink?.id);
+  if (quick && selected.size) return runImport(file, preview, guessFormat(preview), selected, defaultPrecision() === 'f32', relink?.id, origin);
 
   return new Promise((resolve) => {
     let done = false;
@@ -189,7 +194,7 @@ export async function openImportDialog(file: File, quick = false): Promise<DataS
           }
           done = true;
           m.close();
-          resolve(await runImport(file, preview, fmt, selected, precision === 'f32', relink?.id));
+          resolve(await runImport(file, preview, fmt, selected, precision === 'f32', relink?.id, origin));
         },
         true,
       ),
@@ -197,7 +202,39 @@ export async function openImportDialog(file: File, quick = false): Promise<DataS
   });
 }
 
-async function runImport(file: File, p: CsvPreview, fmt: TimeFormat, selected: Set<number>, compact: boolean, id?: string): Promise<DataSource | null> {
+/**
+ * Re-import a CSV with the settings it was imported with before (no dialog).
+ * Used when a workspace's original file changed on disk.
+ */
+export async function reimport(file: File, settings: ImportSettings, id: string, origin: FileOrigin): Promise<DataSource | null> {
+  let p: CsvPreview;
+  try {
+    p = await previewCsv(file, settings.delimiter);
+  } catch (e) {
+    notice(`${file.name}: ${(e as Error).message}`, 6000, 'error');
+    return null;
+  }
+  p.hasHeader = settings.hasHeader;
+  const tc = p.header.indexOf(settings.timeColumn);
+  if (tc >= 0) p.timeColumn = tc;
+  const cols = new Set(settings.columns.map((c) => p.header.indexOf(c)).filter((i) => i >= 0 && i !== p.timeColumn));
+  if (!cols.size) {
+    notice(`${file.name}: 이전에 가져온 열을 찾을 수 없습니다.`, 6000, 'error');
+    return null;
+  }
+  return runImport(file, p, settings.timeFormat, cols, settings.compact, id, origin, false);
+}
+
+async function runImport(
+  file: File,
+  p: CsvPreview,
+  fmt: TimeFormat,
+  selected: Set<number>,
+  compact: boolean,
+  id?: string,
+  origin: FileOrigin = {},
+  add = true,
+): Promise<DataSource | null> {
   const label = h('span', {}, `${file.name} 불러오는 중… 0%`);
   const bar = h('div', { class: 'notice-progress' }, h('div', {}));
   const cancelBtn = h('button', { type: 'button', class: 'notice-cancel' }, '취소');
@@ -231,7 +268,17 @@ async function runImport(file: File, p: CsvPreview, fmt: TimeFormat, selected: S
   try {
     const src = await job.promise;
     n.hide();
-    store.addSource(src);
+    src.path = origin.path ?? undefined;
+    src.lastModified = file.lastModified;
+    src.import = {
+      delimiter: p.delimiter,
+      hasHeader: p.hasHeader,
+      timeColumn: p.header[p.timeColumn],
+      timeFormat: fmt,
+      columns: [...selected].sort((a, b) => a - b).map((i) => p.header[i]),
+      compact,
+    };
+    if (add) store.addSource(src);
     notice(
       `${file.name}: ${formatCount(src.time.length)}행 × ${src.columns.length}열 (${((performance.now() - t0) / 1000).toFixed(1)}s${compact ? ', 32-bit' : ''})`,
     );

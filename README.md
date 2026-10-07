@@ -35,8 +35,21 @@ npm run build    # dist/ 정적 파일 (어느 정적 호스팅에도 배포 가
 - **Y축**: 자동/수동 범위, 0 포함, 로그 스케일, SI 접두사(k, M, G…), 단위. (선택적으로 Y축 줌 허용)
 - **시리즈 변환**: 배율 × / 오프셋 +, 이름 변경, 색상(색각 이상 검증된 8색 팔레트 또는 사용자 지정).
 - **스냅샷**: 위젯을 PNG로 저장(제목·범례 포함). 보이는 구간을 CSV로 내보내기.
-- **워크스페이스 저장/열기**: 레이아웃 + 데이터를 하나의 `.chronos.json`으로. 작업 상태는 브라우저(localStorage + IndexedDB)에 자동 저장되어 새로고침 후에도 유지.
+- **워크스페이스 저장/열기**: `.chronos` 파일 하나에 레이아웃 + CSV 상대경로 + 전처리 결과. 작업 상태는 브라우저에도 자동 보관되어 새로고침 후 유지.
 - **다크/라이트 테마**, 명령 팔레트(Ctrl+P), 단축키, 위젯 최대화.
+
+## 작업 폴더와 워크스페이스 파일 (.chronos)
+
+옵시디언 볼트처럼 **작업 폴더**를 열어 두고 작업합니다 (Chrome / Edge, File System Access API).
+
+- 왼쪽 탐색기 상단에 폴더 트리가 표시되고, CSV를 클릭하면 가져오기, `.chronos`를 클릭하면 워크스페이스 열기.
+- 워크스페이스 파일에는 레이아웃과 함께 **각 CSV의 상대경로**(워크스페이스 파일 위치 기준, 예: `../data/plant.csv`), 파일 크기·수정 시각, 가져오기 설정이 저장됩니다.
+- **전처리 결과(파싱된 값 배열 + 블록 인덱스)는 크기와 관계없이 항상 같은 파일에 바이너리로 저장**됩니다. CSV를 가져오거나 다시 처리하면 자동으로 파일에 기록되고, 폴더에 워크스페이스 파일이 없으면 `workspace.chronos`가 만들어집니다. 레이아웃 변경은 Ctrl+S로 저장(상태 표시줄 ● 표시).
+- **다시 열 때**: 상대경로의 CSV가 그대로면 저장된 전처리를 바로 사용(재파싱 없음) → CSV가 바뀌었으면 같은 설정으로 자동 재처리 후 파일 갱신 → CSV가 없으면 저장된 데이터 사용.
+- 폴더 접근 권한은 기억되며, 새로고침 후 브라우저가 권한을 다시 물으면 탐색기의 “다시 연결” 버튼 한 번으로 복구됩니다.
+- 측정 (헤드리스 Chromium): 139 MB CSV(300만 행 × 4열) 파싱 3.7 s → `workspace.chronos` 127 MB 자동 저장, 새로고침 후 파일에서 복원 약 2 s (페이지 로드 포함).
+- Firefox / Safari: 폴더 접근이 없어 상대경로는 기록되지 않지만, 워크스페이스는 전처리 결과를 포함한 `.chronos` 파일로 내려받고 다시 열 수 있습니다.
+- 파일 형식: `CHRONOS2` 매직 + 헤더 JSON + 8바이트 정렬된 little-endian 배열 구간 (`src/data/chronosFile.ts`). 이전 `.chronos.json` 형식도 열 수 있습니다.
 
 ## 대용량 CSV (수백 MB)
 
@@ -47,8 +60,6 @@ npm run build    # dist/ 정적 파일 (어느 정적 호스팅에도 배포 가
   - 1,000만 행 기준 전체 구간 M4 약 7 ms, 통계 약 2 ms (시리즈당)
 - **M4 다운샘플링**: 화면 픽셀당 처음/최소/최대/마지막 값을 남겨 스파이크를 잃지 않습니다. 위젯별 “최대 포인트”(0 = 원본).
 - **렌더링**: [uPlot](https://github.com/leeoniya/uPlot) canvas. 앱 번들 약 90 KB(gzip).
-- **캐시 한도**: 기본 400 MB 이하의 데이터만 브라우저(IndexedDB)에 저장합니다. 더 큰 파일은 탐색기에 디스크 아이콘이 표시되고, 새로고침 후에는 “다시 열기”로 같은 파일을 열면 차트에 자동으로 다시 연결됩니다. 한도는 속성 패널의 보기 설정에서 변경.
-- **워크스페이스 저장**: 데이터 합계가 150 MB 이하면 JSON에 포함, 그보다 크면 레이아웃만 저장하고 열 때 같은 파일로 재연결합니다.
 - 가져오기 중 진행률과 취소 버튼이 표시됩니다.
 
 ## CSV 가져오기
@@ -65,6 +76,7 @@ npm run build    # dist/ 정적 파일 (어느 정적 호스팅에도 배포 가
 |---|---|
 | Ctrl+P | 명령 팔레트 |
 | Ctrl+O / Ctrl+S | CSV 열기 / 워크스페이스 저장 |
+| Ctrl+Shift+S | 다른 이름으로 저장 (작업 폴더 안 경로 입력) |
 | Alt+T | 새 워크시트 |
 | Ctrl+[ / Ctrl+] | 왼쪽 / 오른쪽 사이드바 |
 | ← / → | 시간축 이동 |
@@ -79,7 +91,9 @@ npm run build    # dist/ 정적 파일 (어느 정적 호스팅에도 배포 가
 
 ```
 src/
-  main.ts                 부트스트랩 (IndexedDB에서 소스 복원)
+  main.ts                 부트스트랩 (IndexedDB에서 소스 복원, 작업 폴더 재연결)
+  project.ts              작업 폴더 · 워크스페이스 파일 · 상대경로 · 전처리 자동 저장/재처리
+  fs/fsa.ts               File System Access 헬퍼, 경로 계산, 핸들 기억
   store.ts                상태 + 이벤트 + 자동 저장 + 타임라인 기록
   actions.ts              열기/샘플/저장/불러오기 등 앱 동작
   palette.ts              다크/라이트 시리즈 팔레트
@@ -89,10 +103,12 @@ src/
   data/fastCsv.ts         바이트 단위 CSV 스캐너 (숫자/ISO 시간 직접 파싱)
   data/blocks.ts          블록 요약 인덱스
   data/downsample.ts      구간 슬라이스 + M4 다운샘플링, 구간 통계
-  data/db.ts              IndexedDB, 워크스페이스 직렬화
+  data/chronosFile.ts     .chronos 바이너리 형식 읽기/쓰기
+  data/db.ts              IndexedDB 캐시, 이전 JSON 형식
   ui/app.ts               셸(리본·사이드바·탭·상태 표시줄), 단축키, 파일 드롭
   ui/worksheetView.ts     뷰 헤더 툴바 + gridstack 위젯 그리드
   ui/chartWidget.ts       uPlot 위젯, 시계열 정렬, 휠 줌/팬, 크로스헤어, 범례 테이블, 스냅샷
+  ui/folderTree.ts        작업 폴더 트리
   ui/explorer.ts          데이터 소스 트리
   ui/properties.ts        속성 패널
   ui/tabs.ts, commandPalette.ts, importDialog.ts, overlays.ts

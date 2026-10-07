@@ -5,6 +5,7 @@ import {
   FilePlus,
   FileSpreadsheet,
   FileX,
+  Folder,
   HardDrive,
   FolderOpen,
   Info,
@@ -19,6 +20,7 @@ import { formatTime } from '../data/time';
 import { formatBytes, formatCount, formatValue, h, icon, iconButton } from '../util';
 import { actions } from '../actions';
 import { confirmDialog, modal, showMenu } from './overlays';
+import { FolderTree } from './folderTree';
 
 type Key = string; // `${sourceId}::${column}`
 const key = (s: string, c: string) => `${s}::${c}`;
@@ -49,6 +51,7 @@ export class Explorer {
         h(
           'div',
           { class: 'nav-buttons-container' },
+          iconButton(Folder, '작업 폴더 열기', () => void actions.openFolder(), 'clickable-icon nav-action-button'),
           iconButton(FolderOpen, 'CSV 열기', () => void actions.openCsv(), 'clickable-icon nav-action-button'),
           iconButton(Sparkles, '샘플 데이터 불러오기', () => void actions.loadSample(), 'clickable-icon nav-action-button'),
           iconButton(FilePlus, '새 워크시트', () => store.addWorksheet(), 'clickable-icon nav-action-button'),
@@ -66,7 +69,7 @@ export class Explorer {
         ),
         h('div', { class: 'search-input-container' }, this.search),
       ),
-      this.tree,
+      h('div', { class: 'explorer-scroll' }, new FolderTree().el, h('div', { class: 'section-title is-static' }, h('span', {}, '데이터 소스')), this.tree),
     );
     store.on('sources', () => this.render());
     this.render();

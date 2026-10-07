@@ -861,10 +861,58 @@ label.checkbox-container::after {
 .search-input {
   width: 100%;
 }
-.nav-files-container {
+.explorer-scroll {
   flex: 1;
   overflow: auto;
-  padding: 4px 6px 16px;
+  min-height: 0;
+}
+.nav-files-container {
+  padding: 0 6px 16px;
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  cursor: pointer;
+  user-select: none;
+}
+.section-title.is-static {
+  cursor: default;
+  padding-left: 14px;
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 6px;
+}
+.folder-section {
+  padding: 0 6px;
+}
+.folder-tree .folder-btn {
+  width: calc(100% - 12px);
+  margin: 4px 6px;
+}
+.folder-note {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  padding: 4px 10px 8px;
+  line-height: 1.45;
+}
+.folder-root .clickable-icon {
+  padding: 2px;
+  opacity: 0;
+}
+.folder-root:hover .clickable-icon {
+  opacity: 1;
+}
+.nav-file-title.is-loaded .tree-item-inner {
+  color: var(--text-normal);
+}
+.nav-file-title.is-loaded .file-icon {
+  color: var(--text-accent);
 }
 .tree-item-self {
   display: flex;
@@ -1184,6 +1232,15 @@ label.checkbox-container::after {
 .status-bar-item:empty {
   display: none;
 }
+.status-bar-spacer {
+  flex: 1;
+}
+.status-bar-item.mod-file {
+  color: var(--text-normal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ============ Menus, modals, notices, prompt ============ */
 .menu {
@@ -1378,8 +1435,10 @@ label.checkbox-container::after {
   padding: 10px 14px;
   border-radius: var(--radius-m);
   box-shadow: var(--shadow-s);
-  max-width: 380px;
+  max-width: 420px;
   font-size: var(--font-ui-small);
+  white-space: pre-line;
+  line-height: 1.45;
   cursor: pointer;
   animation: notice-in 0.16s ease-out;
 }

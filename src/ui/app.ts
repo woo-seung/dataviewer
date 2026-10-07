@@ -12,9 +12,11 @@ import {
   Sun,
   Upload,
   Files,
+  Folder,
 } from 'lucide';
 import { store } from '../store';
 import { actions } from '../actions';
+import { project } from '../project';
 import { formatTime } from '../data/time';
 import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
 import { sourceBytes } from '../data/db';
@@ -34,6 +36,7 @@ export class App {
   private leafHost: HTMLElement;
   private themeBtn: HTMLButtonElement;
   private status = {
+    file: h('div', { class: 'status-bar-item mod-file' }),
     sources: h('div', { class: 'status-bar-item' }),
     cursor: h('div', { class: 'status-bar-item' }),
     render: h('div', { class: 'status-bar-item' }),
@@ -59,6 +62,7 @@ export class App {
         ribbonBtn(Sparkles, '샘플 데이터', () => void actions.loadSample()),
         ribbonBtn(FilePlus, '새 워크시트 (Alt+T)', () => store.addWorksheet()),
         ribbonBtn(CommandIcon, '명령 팔레트 (Ctrl+P)', () => this.palette()),
+        ribbonBtn(Folder, '작업 폴더 열기', () => void actions.openFolder()),
         ribbonBtn(Save, '워크스페이스 저장 (Ctrl+S)', () => void actions.saveWorkspace()),
         ribbonBtn(Upload, '워크스페이스 열기', () => void actions.openWorkspace()),
       ),
@@ -93,7 +97,7 @@ export class App {
     tabs.el.append(rightToggle);
     const center = h('div', { class: 'workspace-split mod-root' }, tabs.el, this.leafHost);
 
-    const statusBar = h('div', { class: 'status-bar' }, this.status.cursor, this.status.render, this.status.sources);
+    const statusBar = h('div', { class: 'status-bar' }, this.status.file, h('div', { class: 'status-bar-spacer' }), this.status.cursor, this.status.render, this.status.sources);
     this.root = h(
       'div',
       { class: 'app-container' },
@@ -111,6 +115,8 @@ export class App {
     store.on('settings', () => this.applySettings());
     store.on('sources', () => this.updateStatus());
     store.on('widgets', () => this.updateStatus());
+    store.on('project', () => this.updateFileStatus());
+    this.updateFileStatus();
     store.on('cursor', (c) => {
       this.status.cursor.textContent = c.x === null ? '' : `커서 ${formatTime(c.x, true)}`;
     });
@@ -166,6 +172,15 @@ export class App {
     return r;
   }
 
+  private updateFileStatus() {
+    const f = project.file;
+    const root = project.root?.name;
+    const label = f ? (f.path ?? f.name) : '저장되지 않은 워크스페이스';
+    this.status.file.textContent = `${root ? `📁 ${root} · ` : ''}${label}${project.saving ? ' · 저장 중…' : project.dirty ? ' ●' : ''}`;
+    this.status.file.title = project.dirty ? '저장되지 않은 변경 (Ctrl+S)' : '';
+    document.title = `${f ? f.name.replace(/\.chronos$/i, '') : 'Chronos Vault'}${project.dirty ? ' •' : ''}`;
+  }
+
   private updateStatus() {
     const n = store.sources.size;
     const rows = [...store.sources.values()].reduce((a, s) => a + s.time.length * s.columns.length, 0);
@@ -208,8 +223,10 @@ export class App {
       { id: 'theme', name: '테마 전환 (다크/라이트)', run: () => actions.toggleTheme() },
       { id: 'left', name: '왼쪽 사이드바 토글', hotkey: 'Ctrl+[', run: () => actions.toggleLeft() },
       { id: 'right', name: '오른쪽 사이드바 토글', hotkey: 'Ctrl+]', run: () => actions.toggleRight() },
-      { id: 'save', name: '워크스페이스 저장 (데이터 포함 JSON)', hotkey: 'Ctrl+S', run: () => void actions.saveWorkspace() },
+      { id: 'save', name: '워크스페이스 저장 (.chronos, 전처리 포함)', hotkey: 'Ctrl+S', run: () => void actions.saveWorkspace() },
+      { id: 'save-as', name: '워크스페이스 다른 이름으로 저장', hotkey: 'Ctrl+Shift+S', run: () => void actions.saveWorkspaceAs() },
       { id: 'load', name: '워크스페이스 열기', run: () => void actions.openWorkspace() },
+      { id: 'folder', name: '작업 폴더 열기', run: () => void actions.openFolder() },
       { id: 'reset', name: '워크스페이스 초기화', run: () => void actions.resetWorkspace() },
       { id: 'help', name: '도움말 / 단축키', run: () => this.help() },
     ];
@@ -257,7 +274,9 @@ export class App {
       h(
         'ul',
         { class: 'help-list' },
-        h('li', {}, 'CSV를 창에 드래그하거나 리본의 폴더 아이콘으로 불러옵니다. 시간 열과 형식은 자동 감지됩니다.'),
+        h('li', {}, '작업 폴더를 열면(리본의 폴더 아이콘) 폴더 안의 CSV와 워크스페이스(.chronos)가 탐색기에 표시됩니다.'),
+        h('li', {}, '워크스페이스 파일에는 CSV의 상대경로와 전처리 결과(파싱된 값 + 인덱스)가 항상 함께 저장됩니다. 다시 열면 CSV가 그대로면 저장된 전처리를, 바뀌었으면 같은 설정으로 다시 처리해 사용합니다.'),
+        h('li', {}, 'CSV를 창에 드래그하거나 CSV 열기로 불러옵니다. 시간 열과 형식은 자동 감지됩니다.'),
         h('li', {}, '탐색기에서 열(시리즈)을 위젯 위로 끌면 추가, 빈 공간으로 끌면 새 위젯이 생성됩니다. Ctrl/Shift로 다중 선택.'),
         h('li', {}, '범례 행을 다른 위젯으로 끌면 시리즈가 이동합니다 (Alt/Ctrl 누르면 복사).'),
         h('li', {}, '위젯 헤더를 끌어 배치를, 모서리를 끌어 크기를 조절합니다.'),
@@ -287,7 +306,7 @@ export class App {
       }
       if (mod && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        void actions.saveWorkspace();
+        void (e.shiftKey ? actions.saveWorkspaceAs() : actions.saveWorkspace());
         return;
       }
       if (e.altKey && !mod && e.code === 'KeyT') {
@@ -347,8 +366,15 @@ export class App {
       e.preventDefault();
       depth = 0;
       this.root.classList.remove('is-file-dragging');
-      const files = Array.from(e.dataTransfer!.files);
-      if (files.length) void actions.openCsv(files);
+      // handles must be requested synchronously inside the drop event
+      const items = Array.from(e.dataTransfer!.items).filter((i) => i.kind === 'file');
+      type WithHandle = DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> };
+      const pending = items.map((i) => {
+        const it = i as WithHandle;
+        const file = it.getAsFile();
+        return it.getAsFileSystemHandle ? it.getAsFileSystemHandle().then((h) => h ?? file) : Promise.resolve(file);
+      });
+      void Promise.all(pending).then((list) => actions.openDropped(list.filter((x): x is FileSystemHandle | File => !!x)));
     });
   }
 }

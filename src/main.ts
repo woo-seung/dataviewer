@@ -4,6 +4,7 @@ import './styles/app.css';
 import { initStore } from './store';
 import { ensureBlocks, sourceDb } from './data/db';
 import { App } from './ui/app';
+import { project } from './project';
 
 async function boot() {
   const store = initStore();
@@ -11,6 +12,8 @@ async function boot() {
   const sources = await sourceDb.all();
   for (const s of sources) store.sources.set(s.id, ensureBlocks(s));
   new App(document.getElementById('app')!);
+  await project.init();
+  (window as unknown as { __chronos: unknown }).__chronos = { store, project };
 }
 
 void boot();
