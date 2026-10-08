@@ -16,6 +16,16 @@ async function boot() {
     notice('데이터 엔진이 없습니다. Chronos Vault 데스크톱 앱으로 실행하세요.', 0, 'error');
     return;
   }
+  const { engine } = await import('./engine');
+  // diagnostics → chronos.log in the app data folder
+  let errors = 0;
+  const report = (m: string) => errors++ < 50 && void engine.log(m);
+  window.addEventListener('error', (e) => report(`error: ${e.message} @ ${e.filename}:${e.lineno}`));
+  window.addEventListener('unhandledrejection', (e) => report(`unhandled: ${(e.reason as Error)?.stack ?? e.reason}`));
+  const heap = () => (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
+  void engine.log(`ui loaded (heap ${Math.round(heap() / 1e6)} MB)`);
+  setInterval(() => void engine.log(`heartbeat: heap ${Math.round(heap() / 1e6)} MB, ${document.querySelectorAll('canvas').length} canvases, ${store.sources.size} sources`), 60_000);
+
   await project.init();
   if (isDesktop) {
     const { getCurrentWindow } = await import('@tauri-apps/api/window');

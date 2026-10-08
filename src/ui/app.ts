@@ -16,7 +16,7 @@ import {
 import { store } from '../store';
 import { actions } from '../actions';
 import { project } from '../project';
-import { isDesktop } from '../engine';
+import { engine, isDesktop } from '../engine';
 
 async function setWindowTitle(t: string) {
   if (!isDesktop) return;
@@ -28,7 +28,7 @@ import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
 import { ChartWidget } from './chartWidget';
 import { openCommandPalette, type Command } from './commandPalette';
 import { Explorer } from './explorer';
-import { modal } from './overlays';
+import { modal, notice } from './overlays';
 import { PropertiesPanel } from './properties';
 import { TabBar } from './tabs';
 import { WorksheetView } from './worksheetView';
@@ -232,6 +232,8 @@ export class App {
       { id: 'load', name: '워크스페이스 열기', run: () => void actions.openWorkspace() },
       { id: 'new', name: '새 워크스페이스', run: () => void actions.newWorkspace() },
       { id: 'help', name: '도움말 / 단축키', run: () => this.help() },
+      { id: 'log', name: '진단 로그 파일 위치 열기', run: () => void this.revealLog() },
+      ...(project.path && !project.untitled ? [{ id: 'reveal-ws', name: '워크스페이스 파일 위치 열기', run: () => void engine.reveal(project.path!) }] : []),
     ];
     const sel = store.ws.selectedWidgetId;
     if (sel && v()?.widget(sel)) {
@@ -252,6 +254,11 @@ export class App {
 
   palette() {
     openCommandPalette(() => this.commands());
+  }
+
+  private async revealLog() {
+    const info = await engine.appInfo();
+    if (info.logPath) await engine.reveal(info.logPath).catch((e: Error) => notice(`${info.logPath}\n${e.message}`, 8000));
   }
 
   private help() {

@@ -28,6 +28,48 @@ fn file_args(argv: impl IntoIterator<Item = String>) -> Vec<String> {
     argv.into_iter().skip(1).filter(|a| !a.starts_with('-')).collect()
 }
 
+/// If a WebView2 process dies (out of memory, GPU/driver trouble) the window
+/// would stay blank. Log why and bring the UI back: reload the page for a dead
+/// or hung renderer, restart the app if the whole browser process is gone.
+/// The workspace reopens by itself (last file / Untitled autosave).
+#[cfg(windows)]
+fn watch_webview(win: &tauri::WebviewWindow, app: tauri::AppHandle, eng: Arc<Engine>) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    use webview2_com::ProcessFailedEventHandler;
+    use windows::core::Interface;
+    let _ = win.with_webview(move |wv| unsafe {
+        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let handler = ProcessFailedEventHandler::create(Box::new(move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2ProcessFailedEventArgs>| {
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+            let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
+            let mut code = 0i32;
+            if let Some(a) = &args {
+                let _ = a.ProcessFailedKind(&mut kind);
+                if let Ok(a2) = a.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
+                    let _ = a2.Reason(&mut reason);
+                    let _ = a2.ExitCode(&mut code);
+                }
+            }
+            eng.log(&format!("WebView2 process failed: kind={} reason={} exitCode={}", kind.0, reason.0, code));
+            if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
+                eng.log("restarting app");
+                app.restart();
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE
+                || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED
+            {
+                if let Some(s) = sender {
+                    eng.log("reloading UI");
+                    let _ = s.Reload();
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        let _ = core.add_ProcessFailed(&handler, &mut token);
+    });
+}
+
 fn main() {
     let launch = file_args(std::env::args());
     tauri::Builder::default()
@@ -46,9 +88,20 @@ fn main() {
         .setup(move |app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let eng = Engine::with_data_dir(dir, env!("CARGO_PKG_VERSION"));
+            let eng = Arc::new(Engine::with_data_dir(dir, env!("CARGO_PKG_VERSION")));
             *eng.launch_files.lock().unwrap() = launch.clone();
-            app.manage(Arc::new(eng));
+            eng.log(&format!("start v{} args={:?}", env!("CARGO_PKG_VERSION"), launch));
+            let panic_eng = eng.clone();
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                panic_eng.log(&format!("PANIC: {info}"));
+                default_hook(info);
+            }));
+            #[cfg(windows)]
+            if let Some(win) = app.get_webview_window("main") {
+                watch_webview(&win, app.handle().clone(), eng.clone());
+            }
+            app.manage(eng);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![engine])

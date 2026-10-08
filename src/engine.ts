@@ -111,6 +111,12 @@ export interface CsvPreview {
   timeFormat: TimeFormat;
 }
 
+export interface Memory {
+  totalMb: number;
+  availableMb: number;
+  processMb: number;
+}
+
 export interface Win {
   x: Float64Array;
   y: Float64Array;
@@ -159,7 +165,10 @@ function withJob<T>(run: (job: string) => Promise<T>, onProgress?: (p: Progress)
 }
 
 export const engine = {
-  appInfo: () => json<{ dataDir: string; launchFiles: string[]; version: string }>('app_info'),
+  appInfo: () => json<{ dataDir: string; logPath: string | null; memory: Memory; launchFiles: string[]; version: string }>('app_info'),
+  memory: () => json<Memory>('memory'),
+  log: (msg: string) => json<boolean>('log', { msg }).catch(() => false),
+  reveal: (path: string) => json<boolean>('reveal', { path }),
   preview: (path: string, delimiter = '') => json<CsvPreview>('preview', { path, delimiter }),
   import: (path: string, settings: ImportSettings, onProgress?: (p: Progress) => void, id?: string): Job<SourceInfo> =>
     withJob((job) => json<SourceInfo>('import', { path, settings, id, job }), onProgress),
@@ -176,20 +185,24 @@ export const engine = {
   stats: (series: SeriesKey[], start: number, end: number) => json<(Stats | null)[]>('stats', { series, start, end }),
   values: (series: SeriesKey[], t: number) => json<(number | null)[]>('values', { series, t }),
   async window(series: SeriesKey[], start: number, end: number, maxPoints: number): Promise<(Win | null)[]> {
-    const buf = await raw('window', { series, start, end, maxPoints });
-    // payload starts at byte 1; copy to an 8-byte aligned buffer
-    const f = new Float64Array(buf.slice(1));
-    const n = f[0];
+    const buf = (await raw('window', { series, start, end, maxPoints })).slice(1);
+    // f64 header [n, base, (len, raw)*n], then per series f32 x-offsets + f32 y
+    const n = new Float64Array(buf, 0, 1)[0];
+    const head = new Float64Array(buf, 0, 2 + n * 2);
+    const base = head[1];
+    const data = new Float32Array(buf, head.byteLength);
     const out: (Win | null)[] = [];
-    let o = 1 + n * 2;
+    let o = 0;
     for (let i = 0; i < n; i++) {
-      const len = f[1 + i * 2];
-      const rawN = f[2 + i * 2];
+      const len = head[2 + i * 2];
+      const rawN = head[3 + i * 2];
       if (!len && !rawN) {
         out.push(null);
         continue;
       }
-      out.push({ x: f.subarray(o, o + len), y: f.subarray(o + len, o + 2 * len), raw: rawN });
+      const x = new Float64Array(len);
+      for (let k = 0; k < len; k++) x[k] = base + data[o + k];
+      out.push({ x, y: Float64Array.from(data.subarray(o + len, o + 2 * len)), raw: rawN });
       o += 2 * len;
     }
     return out;

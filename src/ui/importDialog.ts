@@ -67,7 +67,13 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
     const match = preview.header.map((n, i) => (wanted.has(n) ? i : -1)).filter((i) => i >= 0 && i !== preview.timeColumn);
     if (match.length) selected = new Set(match);
   }
-  const defaultPrecision = (): Precision => (estimateBytes(preview.estimatedRows, selected.size, false) > COMPACT_THRESHOLD ? 'f32' : 'f64');
+  // keep the import well inside the free RAM: 32-bit when 64-bit would take over 40% of it
+  const mem = await engine.memory().catch(() => null);
+  const freeBytes = mem ? mem.availableMb * 1024 * 1024 : Infinity;
+  const defaultPrecision = (): Precision => {
+    const need = estimateBytes(preview.estimatedRows, selected.size, false);
+    return need > COMPACT_THRESHOLD || need > freeBytes * 0.4 ? 'f32' : 'f64';
+  };
   const settingsOf = (fmt: TimeFormat, compact: boolean): ImportSettings => ({
     delimiter: preview.delimiter,
     hasHeader: preview.hasHeader,
@@ -89,7 +95,9 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
     const memLine = h('div', { class: 'setting-item-description' });
     const updateMem = () => {
       const bytes = estimateBytes(preview.estimatedRows, selected.size, precision === 'f32');
-      memLine.textContent = `예상 ${formatCount(preview.estimatedRows)}행 · 메모리 약 ${formatBytes(bytes)}`;
+      const tight = bytes > freeBytes * 0.8;
+      memLine.textContent = `예상 ${formatCount(preview.estimatedRows)}행 · 메모리 약 ${formatBytes(bytes)}${mem ? ` / 사용 가능 ${formatBytes(freeBytes)}` : ''}${tight ? ' — 메모리가 부족할 수 있습니다. 32-bit로 바꾸거나 열 수를 줄이세요.' : ''}`;
+      memLine.classList.toggle('is-warning', tight);
     };
 
     const rerender = () => {
@@ -223,6 +231,7 @@ async function runImport(path: string, settings: ImportSettings, id?: string): P
   try {
     const src = await job.promise;
     pn.hide();
+    void engine.log(`imported ${name}: ${src.rows} rows, ${Math.round(src.bytes / 1e6)} MB`);
     store.addSource(src);
     notice(`${name}: ${formatCount(src.rows)}행 × ${src.columns.length}열 (${((performance.now() - t0) / 1000).toFixed(1)}s${settings.compact ? ', 32-bit' : ''})`);
     return src;

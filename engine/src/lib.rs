@@ -7,6 +7,7 @@
 
 pub mod chronos;
 pub mod csv;
+pub mod diag;
 pub mod series;
 pub mod time;
 
@@ -200,15 +201,23 @@ pub struct Engine {
     /// Files passed on the command line (file association / "open with").
     pub launch_files: Mutex<Vec<String>>,
     pub version: String,
+    log: Option<diag::Log>,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        Self { data_dir: std::env::temp_dir().join("chronos-vault"), ..Self::default() }
+        Self::with_data_dir(std::env::temp_dir().join("chronos-vault"), "")
     }
 
     pub fn with_data_dir(dir: PathBuf, version: &str) -> Self {
-        Self { data_dir: dir, version: version.to_string(), ..Self::default() }
+        Self { log: Some(diag::Log::new(&dir)), data_dir: dir, version: version.to_string(), ..Self::default() }
+    }
+
+    /// Append to chronos.log in the app data folder (with memory figures).
+    pub fn log(&self, msg: &str) {
+        if let Some(l) = &self.log {
+            l.write(msg);
+        }
     }
 
     fn get(&self, id: &str) -> Result<Arc<Source>, Error> {
@@ -275,7 +284,9 @@ impl Engine {
             columns,
             missing_original: false,
         });
-        emit("log", json!({ "msg": format!("{}: {} rows, {:.2}s", src.name, src.time.len(), t0.elapsed().as_secs_f64()), "skipped": parsed.skipped }));
+        let msg = format!("import {}: {} rows x {} cols, {:.0} MB in memory, {:.2}s", src.name, src.time.len(), src.columns.len(), src.byte_len() as f64 / 1e6, t0.elapsed().as_secs_f64());
+        self.log(&msg);
+        emit("log", json!({ "msg": msg, "skipped": parsed.skipped }));
         self.sources.write().unwrap().insert(src.id.clone(), src.clone());
         Ok(src)
     }
@@ -360,7 +371,11 @@ impl Engine {
             }
             "window" => {
                 let (start, end) = (f("start"), f("end"));
-                let max_points = args.get("maxPoints").and_then(Value::as_u64).unwrap_or(4000) as usize;
+                // 0 = raw, but never ship more than 1M points per series to the webview
+                let max_points = match args.get("maxPoints").and_then(Value::as_u64).unwrap_or(4000) as usize {
+                    0 => 1_000_000,
+                    n => n.min(1_000_000),
+                };
                 let refs = series()?;
                 let wins: Vec<Option<series::Window>> = refs
                     .par_iter()
@@ -370,17 +385,23 @@ impl Engine {
                         Some(window(&src.time, &c.values, &c.blocks, start, end, max_points))
                     })
                     .collect();
-                // f64 layout: [n, (len, raw)*n, x0.., y0.., x1.., y1.. …]
-                let mut out: Vec<f64> = vec![wins.len() as f64];
+                // Drawing data only, so it travels as f32 (half the IPC volume):
+                // f64 header [n, base, (len, raw)*n] then per series f32 x-offsets from
+                // `base` followed by f32 y. Exact values come from `values` / `stats`.
+                let base = if start.is_finite() { start } else { 0.0 };
+                let mut head: Vec<f64> = vec![wins.len() as f64, base];
                 for w in &wins {
-                    out.push(w.as_ref().map_or(0.0, |w| w.x.len() as f64));
-                    out.push(w.as_ref().map_or(0.0, |w| w.raw as f64));
+                    head.push(w.as_ref().map_or(0.0, |w| w.x.len() as f64));
+                    head.push(w.as_ref().map_or(0.0, |w| w.raw as f64));
                 }
+                let mut out: Vec<u8> = bytemuck::cast_slice(&head).to_vec();
                 for w in wins.iter().flatten() {
-                    out.extend_from_slice(&w.x);
-                    out.extend_from_slice(&w.y);
+                    let xs: Vec<f32> = w.x.iter().map(|&x| (x - base) as f32).collect();
+                    let ys: Vec<f32> = w.y.iter().map(|&y| y as f32).collect();
+                    out.extend_from_slice(bytemuck::cast_slice(&xs));
+                    out.extend_from_slice(bytemuck::cast_slice(&ys));
                 }
-                Reply::Bytes(bytemuck::cast_slice(&out).to_vec())
+                Reply::Bytes(out)
             }
             "stats" => {
                 let (start, end) = (f("start"), f("end"));
@@ -422,9 +443,23 @@ impl Engine {
                 all.sort_by(|a, b| a.id.cmp(&b.id));
                 let t0 = std::time::Instant::now();
                 let rep = chronos::save(&path, args.get("workspace").cloned().unwrap_or(Value::Null), &all, now_ms())?;
+                self.log(&format!("save {}: {} MB file, {} MB written, {} ms", path.display(), rep.file_size >> 20, rep.written >> 20, t0.elapsed().as_millis()));
                 Reply::Json(json!({ "fileSize": rep.file_size, "written": rep.written, "rewrote": rep.rewrote, "ms": t0.elapsed().as_millis() as u64 }))
             }
-            "open" => Reply::Json(self.open_workspace(Path::new(&need("path")?), &s("job").unwrap_or_default(), emit)?),
+            "open" => {
+                let p = need("path")?;
+                self.log(&format!("open {p}"));
+                Reply::Json(self.open_workspace(Path::new(&p), &s("job").unwrap_or_default(), emit)?)
+            }
+            "log" => {
+                self.log(&format!("ui: {}", s("msg").unwrap_or_default()));
+                Reply::Json(json!(true))
+            }
+            "memory" => Reply::Json(serde_json::to_value(diag::memory())?),
+            "reveal" => {
+                diag::reveal(Path::new(&need("path")?))?;
+                Reply::Json(json!(true))
+            }
             "stat" => {
                 let p = PathBuf::from(need("path")?);
                 Reply::Json(match std::fs::metadata(&p) {
@@ -480,6 +515,8 @@ impl Engine {
             }
             "app_info" => Reply::Json(json!({
                 "dataDir": self.data_dir.to_string_lossy(),
+                "logPath": self.log.as_ref().map(|l| l.path().to_string_lossy().into_owned()),
+                "memory": diag::memory(),
                 "launchFiles": std::mem::take(&mut *self.launch_files.lock().unwrap()),
                 "version": self.version,
             })),
@@ -630,9 +667,10 @@ mod tests {
 
         // window bytes decode
         let Reply::Bytes(b) = e2.call("window", json!({ "series": [{ "source": o["sources"][0]["id"], "column": "a" }], "start": 0, "end": 2e12, "maxPoints": 400 }), &noop).unwrap() else { panic!() };
-        let v: Vec<f64> = b.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect();
+        let v: Vec<f64> = b[..32].chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect();
         assert_eq!(v[0], 1.0);
-        assert!(v[1] <= 402.0 && v[2] == 10_000.0, "{:?}", &v[..3]);
+        assert!(v[2] <= 402.0 && v[3] == 10_000.0, "{:?}", &v[..4]);
+        assert_eq!(b.len(), 32 + v[2] as usize * 8);
         let _ = std::fs::remove_dir_all(&moved);
     }
 }

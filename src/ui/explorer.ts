@@ -18,6 +18,7 @@ import { formatTime } from '../data/time';
 import { formatBytes, formatCount, formatValue, h, icon, iconButton } from '../util';
 import { actions } from '../actions';
 import { project } from '../project';
+import { engine } from '../engine';
 import { modal, showMenu } from './overlays';
 import { RecentFiles } from './recentFiles';
 import { draggable, seriesPayload } from './dnd';
@@ -265,6 +266,7 @@ export class Explorer {
           },
         },
         { title: '정보', icon: Info, onClick: () => this.info(src) },
+        { title: '파일 위치 열기', icon: FolderOpen, disabled: src.missingOriginal, onClick: () => void engine.reveal(src.path) },
         { separator: true, title: '' },
         {
           title: '데이터 소스 제거',
