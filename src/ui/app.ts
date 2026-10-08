@@ -369,7 +369,10 @@ export class App {
       getCurrentWebview().onDragDropEvent((e) => {
         const t = e.payload.type;
         this.root.classList.toggle('is-file-dragging', t === 'enter' || t === 'over');
-        if (t === 'drop') void actions.openDropped(e.payload.paths);
+        if (t === 'drop') {
+          void engine.log(`file drop: ${e.payload.paths.length} file(s)`);
+          void actions.openDropped(e.payload.paths);
+        }
       }),
     );
   }

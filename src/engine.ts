@@ -184,30 +184,41 @@ export const engine = {
     json<{ rows: number }>('export_csv', { path, series, start, end }),
   stats: (series: SeriesKey[], start: number, end: number) => json<(Stats | null)[]>('stats', { series, start, end }),
   values: (series: SeriesKey[], t: number) => json<(number | null)[]>('values', { series, t }),
+  /** Downsampled windows, fetched in slices so no single IPC reply grows past ~8 MB. */
   async window(series: SeriesKey[], start: number, end: number, maxPoints: number): Promise<(Win | null)[]> {
-    const buf = (await raw('window', { series, start, end, maxPoints })).slice(1);
-    // f64 header [n, base, (len, raw)*n], then per series f32 x-offsets + f32 y
-    const n = new Float64Array(buf, 0, 1)[0];
-    const head = new Float64Array(buf, 0, 2 + n * 2);
-    const base = head[1];
-    const data = new Float32Array(buf, head.byteLength);
+    const perSeries = 8 * (maxPoints > 0 ? maxPoints : 1_000_000);
+    const step = Math.max(1, Math.floor(REPLY_BUDGET / perSeries));
     const out: (Win | null)[] = [];
-    let o = 0;
-    for (let i = 0; i < n; i++) {
-      const len = head[2 + i * 2];
-      const rawN = head[3 + i * 2];
-      if (!len && !rawN) {
-        out.push(null);
-        continue;
-      }
-      const x = new Float64Array(len);
-      for (let k = 0; k < len; k++) x[k] = base + data[o + k];
-      out.push({ x, y: Float64Array.from(data.subarray(o + len, o + 2 * len)), raw: rawN });
-      o += 2 * len;
-    }
+    for (let i = 0; i < series.length; i += step) out.push(...(await windowSlice(series.slice(i, i + step), start, end, maxPoints)));
     return out;
   },
 };
+
+const REPLY_BUDGET = 8 * 1024 * 1024;
+
+async function windowSlice(series: SeriesKey[], start: number, end: number, maxPoints: number): Promise<(Win | null)[]> {
+  const buf = (await raw('window', { series, start, end, maxPoints })).slice(1);
+  // f64 header [n, base, (len, raw)*n], then per series f32 x-offsets + f32 y
+  const n = new Float64Array(buf, 0, 1)[0];
+  const head = new Float64Array(buf, 0, 2 + n * 2);
+  const base = head[1];
+  const data = new Float32Array(buf, head.byteLength);
+  const out: (Win | null)[] = [];
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    const len = head[2 + i * 2];
+    const rawN = head[3 + i * 2];
+    if (!len && !rawN) {
+      out.push(null);
+      continue;
+    }
+    const x = new Float64Array(len);
+    for (let k = 0; k < len; k++) x[k] = base + data[o + k];
+    out.push({ x, y: Float64Array.from(data.subarray(o + len, o + 2 * len)), raw: rawN });
+    o += 2 * len;
+  }
+  return out;
+}
 
 function toBase64(b: Uint8Array): string {
   let s = '';

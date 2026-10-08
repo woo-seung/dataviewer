@@ -1,7 +1,7 @@
 import 'gridstack/dist/gridstack.min.css';
 import 'uplot/dist/uPlot.min.css';
 import './styles/app.css';
-import { initStore } from './store';
+import { initStore, MAX_SERIES_PER_CHART } from './store';
 import { App } from './ui/app';
 import { project, confirmClose } from './project';
 import { hasEngine, isDesktop } from './engine';
@@ -24,6 +24,10 @@ async function boot() {
   window.addEventListener('unhandledrejection', (e) => report(`unhandled: ${(e.reason as Error)?.stack ?? e.reason}`));
   const heap = () => (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
   void engine.log(`ui loaded (heap ${Math.round(heap() / 1e6)} MB)`);
+  store.onSeriesLimit = (added, skipped) => {
+    notice(`차트 하나에는 시리즈를 ${MAX_SERIES_PER_CHART}개까지 넣을 수 있습니다. ${added}개를 추가하고 ${skipped}개는 건너뛰었습니다.`, 6000);
+    void engine.log(`series limit: added ${added}, skipped ${skipped}`);
+  };
   setInterval(() => void engine.log(`heartbeat: heap ${Math.round(heap() / 1e6)} MB, ${document.querySelectorAll('canvas').length} canvases, ${store.sources.size} sources`), 60_000);
 
   await project.init();

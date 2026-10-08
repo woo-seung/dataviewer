@@ -1,6 +1,6 @@
 [package]
 name = "chronos-engine"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "CSV time-series engine: parallel parsing, block index, M4 windows, .chronos workspace files"
 

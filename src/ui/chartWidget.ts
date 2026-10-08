@@ -326,6 +326,8 @@ export class ChartWidget {
     this.renderedRange = range;
     this.drawCursor(this.lastCursor, false);
     ChartWidget.onRendered?.(this.wsId, this.id, raw, x.length * series.length, performance.now() - t0);
+    const ms = performance.now() - t0;
+    if (ms > 2000) void engine.log(`slow chart render: ${series.length} series, ${x.length} points, ${raw} raw rows, ${Math.round(ms)} ms`);
     this.renderLegend(series, range);
   }
 

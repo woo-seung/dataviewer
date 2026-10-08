@@ -28,6 +28,9 @@ type Events = {
 
 type Handler<T> = (payload: T) => void;
 
+/** Hundreds of lines in one chart are unreadable and make every redraw move tens of MB. */
+export const MAX_SERIES_PER_CHART = 64;
+
 const LS_KEY = 'chronos-vault.workspace.v1';
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -80,6 +83,8 @@ class Store {
 
   /** Hook for the project layer (dirty tracking). */
   onChange?: (ev: keyof Events) => void;
+  /** Called when a drop asked for more series than a chart may hold. */
+  onSeriesLimit?: (added: number, skipped: number) => void;
 
   constructor() {
     this.ws = this.load();
@@ -350,7 +355,12 @@ class Store {
 
   private appendSeries(w: WidgetState, items: { sourceId: string; column: string }[]): number {
     let added = 0;
+    let skipped = 0;
     for (const it of items) {
+      if (w.series.length >= MAX_SERIES_PER_CHART) {
+        skipped++;
+        continue;
+      }
       if (w.series.some((s) => s.sourceId === it.sourceId && s.column === it.column)) continue;
       if (!this.column(it.sourceId, it.column)) continue;
       const multiSource = new Set([...w.series.map((s) => s.sourceId), it.sourceId]).size > 1;
@@ -367,6 +377,7 @@ class Store {
       });
       added++;
     }
+    if (skipped) this.onSeriesLimit?.(added, skipped);
     return added;
   }
 

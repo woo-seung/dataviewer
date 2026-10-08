@@ -1,6 +1,6 @@
 [package]
 name = "chronos-vault"
-version = "0.1.0"
+version = "0.1.2"
 description = "Chronos Vault — desktop time-series viewer for large CSV files"
 edition = "2021"
 
