@@ -1,0 +1,17 @@
+[package]
+name = "chronos-engine"
+version = "0.1.0"
+edition = "2021"
+description = "CSV time-series engine: parallel parsing, block index, M4 windows, .chronos workspace files"
+
+[dependencies]
+memmap2 = "0.9"
+rayon = "1.10"
+memchr = "2"
+fast-float2 = "0.2"
+bytemuck = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[dev-dependencies]

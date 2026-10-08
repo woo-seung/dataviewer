@@ -18,7 +18,8 @@ import {
   ZoomOut,
 } from 'lucide';
 import { store } from '../store';
-import { DRAG_MIME, DRAG_MOVE_MIME, type SeriesDrag, type TimeRange } from '../types';
+import type { TimeRange } from '../types';
+import { dropTarget, isSeries } from './dnd';
 import { formatDuration, fromInputValue, toInputValue } from '../data/time';
 import { h, icon, iconButton } from '../util';
 import { ChartWidget } from './chartWidget';
@@ -259,26 +260,16 @@ export class WorksheetView {
 
   /** Dropping series on empty grid space creates a new widget there. */
   private bindDrop(area: HTMLElement) {
-    area.addEventListener('dragover', (e) => {
-      if (!e.dataTransfer?.types.includes(DRAG_MIME)) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = e.dataTransfer.types.includes(DRAG_MOVE_MIME) && !(e.altKey || e.ctrlKey) ? 'move' : 'copy';
-      area.classList.add('is-drop-target');
-    });
-    area.addEventListener('dragleave', (e) => {
-      if (!area.contains(e.relatedTarget as Node)) area.classList.remove('is-drop-target');
-    });
-    area.addEventListener('drop', (e) => {
-      area.classList.remove('is-drop-target');
-      const raw = e.dataTransfer?.getData(DRAG_MIME);
-      if (!raw) return;
-      e.preventDefault();
-      const p = JSON.parse(raw) as SeriesDrag;
-      const rect = this.gridEl.getBoundingClientRect();
-      const cell = this.grid.getCellFromPixel({ left: e.clientX - rect.left, top: e.clientY - rect.top });
-      const x = Math.max(0, Math.min(6, cell.x));
-      const w = store.addWidget(this.wsId, { x, y: Math.max(0, cell.y) }, p.fromWidget ? [] : p.items);
-      if (w && p.fromWidget) store.moveSeries(p.fromWidget, this.wsId, w.id, e.altKey || e.ctrlKey);
+    dropTarget(area, {
+      accepts: isSeries,
+      drop: (p, e) => {
+        if (!isSeries(p)) return;
+        const rect = this.gridEl.getBoundingClientRect();
+        const cell = this.grid.getCellFromPixel({ left: e.clientX - rect.left, top: e.clientY - rect.top });
+        const x = Math.max(0, Math.min(6, cell.x));
+        const w = store.addWidget(this.wsId, { x, y: Math.max(0, cell.y) }, p.data.fromWidget ? [] : p.data.items);
+        if (w && p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, w.id, e.altKey || e.ctrlKey);
+      },
     });
   }
 }

@@ -5,8 +5,6 @@ import {
   FilePlus,
   FileSpreadsheet,
   FileX,
-  Folder,
-  HardDrive,
   FolderOpen,
   Info,
   LayoutDashboard,
@@ -15,12 +13,15 @@ import {
   Trash2,
 } from 'lucide';
 import { store } from '../store';
-import { DRAG_MIME, type DataSource, type SeriesDrag } from '../types';
+import type { SeriesDrag, SourceInfo } from '../types';
 import { formatTime } from '../data/time';
 import { formatBytes, formatCount, formatValue, h, icon, iconButton } from '../util';
 import { actions } from '../actions';
-import { confirmDialog, modal, showMenu } from './overlays';
-import { FolderTree } from './folderTree';
+import { project } from '../project';
+import { modal, showMenu } from './overlays';
+import { RecentFiles } from './recentFiles';
+import { draggable, seriesPayload } from './dnd';
+import { baseName } from '../dialogs';
 
 type Key = string; // `${sourceId}::${column}`
 const key = (s: string, c: string) => `${s}::${c}`;
@@ -51,7 +52,6 @@ export class Explorer {
         h(
           'div',
           { class: 'nav-buttons-container' },
-          iconButton(Folder, '작업 폴더 열기', () => void actions.openFolder(), 'clickable-icon nav-action-button'),
           iconButton(FolderOpen, 'CSV 열기', () => void actions.openCsv(), 'clickable-icon nav-action-button'),
           iconButton(Sparkles, '샘플 데이터 불러오기', () => void actions.loadSample(), 'clickable-icon nav-action-button'),
           iconButton(FilePlus, '새 워크시트', () => store.addWorksheet(), 'clickable-icon nav-action-button'),
@@ -69,7 +69,7 @@ export class Explorer {
         ),
         h('div', { class: 'search-input-container' }, this.search),
       ),
-      h('div', { class: 'explorer-scroll' }, new FolderTree().el, h('div', { class: 'section-title is-static' }, h('span', {}, '데이터 소스')), this.tree),
+      h('div', { class: 'explorer-scroll' }, h('div', { class: 'section-title is-static is-first' }, h('span', {}, '데이터 소스')), this.tree, new RecentFiles().el),
     );
     store.on('sources', () => this.render());
     this.render();
@@ -103,7 +103,7 @@ export class Explorer {
           'div',
           { class: 'pane-empty' },
           h('p', {}, '불러온 데이터가 없습니다.'),
-          h('p', { class: 'muted' }, 'CSV 파일을 창에 끌어다 놓거나 아래 버튼을 사용하세요.'),
+          h('p', { class: 'muted' }, 'CSV 파일을 창에 끌어다 놓거나 아래 버튼을 사용하세요. 파일 크기 제한은 없습니다.'),
           h('button', { class: 'mod-cta', type: 'button', onclick: (() => void actions.openCsv()) as EventListener }, icon(FolderOpen, 15), ' CSV 열기'),
           h('button', { type: 'button', onclick: (() => void actions.loadSample()) as EventListener }, icon(Sparkles, 15), ' 샘플 데이터'),
         ),
@@ -116,22 +116,18 @@ export class Explorer {
       const open = q ? true : !this.collapsed.has(src.id);
       const folder = h(
         'div',
-        { class: `tree-item-self nav-folder-title ${open ? '' : 'is-collapsed'}`, draggable: 'true', role: 'treeitem', 'aria-expanded': String(open), title: this.sourceTooltip(src) },
+        { class: `tree-item-self nav-folder-title ${open ? '' : 'is-collapsed'} ${src.missingOriginal ? 'is-orphan' : ''}`, role: 'treeitem', 'aria-expanded': String(open), title: this.sourceTooltip(src) },
         h('div', { class: 'tree-item-icon collapse-icon' }, icon(ChevronRight, 14)),
-        icon(FileSpreadsheet, 15, 'file-icon'),
+        icon(src.missingOriginal ? FileX : FileSpreadsheet, 15, 'file-icon'),
         h('div', { class: 'tree-item-inner' }, src.name),
-        store.uncached.has(src.id) ? h('span', { class: 'tree-item-flair', title: '용량이 커서 브라우저에 캐시하지 않았습니다. 새로고침 후에는 파일을 다시 열어야 합니다.' }, icon(HardDrive, 12)) : null,
-        h('div', { class: 'tree-item-flair' }, formatCount(src.time.length)),
+        h('div', { class: 'tree-item-flair' }, formatCount(src.rows)),
       );
       folder.addEventListener('click', () => {
         if (this.collapsed.has(src.id)) this.collapsed.delete(src.id);
         else this.collapsed.add(src.id);
         this.render();
       });
-      folder.addEventListener('dragstart', (e) => {
-        e.dataTransfer!.setData(DRAG_MIME, JSON.stringify(this.dragPayload(src.columns.map((c) => key(src.id, c.name)))));
-        e.dataTransfer!.effectAllowed = 'copy';
-      });
+      draggable(folder, () => seriesPayload(this.dragPayload(src.columns.map((c) => key(src.id, c.name)))), () => `${src.name} (${src.columns.length}개 열)`);
       folder.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         this.sourceMenu(src, e);
@@ -145,32 +141,27 @@ export class Explorer {
             'div',
             {
               class: `tree-item-self nav-file-title ${this.selected.has(k) ? 'is-active' : ''}`,
-              draggable: 'true',
               role: 'treeitem',
               'aria-selected': String(this.selected.has(k)),
-              title: `${c.name}\n최소 ${formatValue(c.min)} · 최대 ${formatValue(c.max)} · 평균 ${formatValue(c.mean)}\n더블클릭: 선택된 위젯에 추가`,
+              title: `${c.name}\n최소 ${formatValue(c.min ?? NaN)} · 최대 ${formatValue(c.max ?? NaN)} · 평균 ${formatValue(c.mean ?? NaN)}\n더블클릭: 선택된 위젯에 추가 · 끌어서 차트에 놓기`,
             },
             icon(ChartLine, 14, 'file-icon'),
             h('div', { class: 'tree-item-inner' }, c.name),
           );
           row.addEventListener('click', (e) => this.onSelect(k, e));
           row.addEventListener('dblclick', () => this.addToChart([k]));
-          row.addEventListener('dragstart', (e) => {
-            if (!this.selected.has(k)) {
-              this.selected = new Set([k]);
-              this.anchor = k;
-              this.markSelection();
-            }
-            e.dataTransfer!.setData(DRAG_MIME, JSON.stringify(this.dragPayload([...this.selected])));
-            e.dataTransfer!.effectAllowed = 'copy';
-            const n = this.selected.size;
-            if (n > 1) {
-              const ghost = h('div', { class: 'drag-ghost' }, `${n}개 시리즈`);
-              document.body.append(ghost);
-              e.dataTransfer!.setDragImage(ghost, -8, -8);
-              setTimeout(() => ghost.remove());
-            }
-          });
+          draggable(
+            row,
+            () => {
+              if (!this.selected.has(k)) {
+                this.selected = new Set([k]);
+                this.anchor = k;
+                this.markSelection();
+              }
+              return seriesPayload(this.dragPayload([...this.selected]));
+            },
+            () => (this.selected.size > 1 ? `${this.selected.size}개 시리즈` : c.name),
+          );
           row.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             if (!this.selected.has(k)) this.onSelect(k, e);
@@ -185,17 +176,17 @@ export class Explorer {
       if (q && !m.name.toLowerCase().includes(q)) continue;
       const row = h(
         'div',
-        { class: 'tree-item-self nav-folder-title is-missing', title: `${m.name}\n데이터가 로드되지 않았습니다. 클릭하여 같은 파일을 다시 열면 차트에 연결됩니다.` },
+        { class: 'tree-item-self nav-folder-title is-missing', title: `${m.path}\n데이터가 로드되지 않았습니다. 클릭하면 다시 불러옵니다.` },
         icon(FileX, 15, 'file-icon'),
         h('div', { class: 'tree-item-inner' }, m.name),
         h('div', { class: 'tree-item-flair' }, '다시 열기'),
       );
-      row.addEventListener('click', () => void actions.openCsv());
+      row.addEventListener('click', () => void project.restoreMissing());
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         showMenu(
           [
-            { title: '파일 다시 열기', icon: FolderOpen, onClick: () => void actions.openCsv() },
+            { title: '다시 불러오기', icon: FolderOpen, onClick: () => void project.restoreMissing() },
             { title: '목록과 차트에서 제거', icon: Trash2, danger: true, onClick: () => store.removeSource(m.id) },
           ],
           { x: e.clientX, y: e.clientY },
@@ -231,8 +222,8 @@ export class Explorer {
     this.markSelection();
   }
 
-  private sourceTooltip(src: DataSource) {
-    return `${src.name}\n${formatCount(src.time.length)}행 · ${src.columns.length}열 · ${formatBytes(src.size)}\n${formatTime(src.time[0])} → ${formatTime(src.time[src.time.length - 1])}`;
+  private sourceTooltip(src: SourceInfo) {
+    return `${src.path}\n${formatCount(src.rows)}행 · ${src.columns.length}열 · 파일 ${formatBytes(src.size)} · 메모리 ${formatBytes(src.bytes)}\n${formatTime(src.start)} → ${formatTime(src.end)}${src.missingOriginal ? '\n⚠ 원본 CSV를 찾을 수 없어 워크스페이스에 저장된 데이터를 사용 중' : ''}`;
   }
 
   private columnMenu(e: MouseEvent) {
@@ -261,7 +252,7 @@ export class Explorer {
     );
   }
 
-  private sourceMenu(src: DataSource, e: MouseEvent) {
+  private sourceMenu(src: SourceInfo, e: MouseEvent) {
     showMenu(
       [
         { title: '모든 열을 차트로', icon: ChartLine, onClick: () => actions.chartSource(src) },
@@ -279,30 +270,29 @@ export class Explorer {
           title: '데이터 소스 제거',
           icon: Trash2,
           danger: true,
-          onClick: async () => {
-            if (await confirmDialog('데이터 소스 제거', `"${src.name}" 을(를) 제거하면 이 데이터를 사용하는 모든 시리즈가 차트에서 빠집니다.`, '제거'))
-              store.removeSource(src.id);
-          },
+          onClick: () => void actions.removeSource(src.id),
         },
       ],
       { x: e.clientX, y: e.clientY },
     );
   }
 
-  private info(src: DataSource) {
-    const m = modal(src.name, { width: 640 });
+  private info(src: SourceInfo) {
+    const m = modal(baseName(src.name), { width: 640 });
     const t = h('table', { class: 'info-table' });
     const rows: [string, string][] = [
-      ['행 수', formatCount(src.time.length)],
+      ['경로', src.path + (src.missingOriginal ? ' (찾을 수 없음 — 저장된 데이터 사용)' : '')],
+      ['행 수', formatCount(src.rows)],
       ['파일 크기', formatBytes(src.size)],
-      ['시간 열', src.timeColumn],
-      ['시작', formatTime(src.time[0], true)],
-      ['끝', formatTime(src.time[src.time.length - 1], true)],
-      ['불러온 시각', new Date(src.importedAt).toLocaleString()],
+      ['메모리', `${formatBytes(src.bytes)}${src.compact ? ' (32-bit 값)' : ''}`],
+      ['시간 열', `${src.timeColumn} (${src.import.timeFormat})`],
+      ['시작', formatTime(src.start, true)],
+      ['끝', formatTime(src.end, true)],
+      ['처리한 시각', new Date(src.importedAt).toLocaleString()],
     ];
     rows.forEach(([a, b]) => t.append(h('tr', {}, h('th', {}, a), h('td', {}, b))));
     const ct = h('table', { class: 'info-table cols' }, h('tr', {}, h('th', {}, '열'), h('th', {}, '최소'), h('th', {}, '최대'), h('th', {}, '평균')));
-    src.columns.forEach((c) => ct.append(h('tr', {}, h('td', {}, c.name), h('td', { class: 'num' }, formatValue(c.min)), h('td', { class: 'num' }, formatValue(c.max)), h('td', { class: 'num' }, formatValue(c.mean)))));
+    src.columns.forEach((c) => ct.append(h('tr', {}, h('td', {}, c.name), h('td', { class: 'num' }, formatValue(c.min ?? NaN)), h('td', { class: 'num' }, formatValue(c.max ?? NaN)), h('td', { class: 'num' }, formatValue(c.mean ?? NaN)))));
     m.content.append(t, h('h4', {}, '열 통계'), ct);
   }
 }

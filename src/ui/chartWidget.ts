@@ -24,14 +24,15 @@ import {
   type IconNode,
 } from 'lucide';
 import { store } from '../store';
-import type { ChartType, SeriesDrag, SeriesRef, TimeRange, WidgetState } from '../types';
-import { DRAG_MIME, DRAG_MOVE_MIME } from '../types';
-import { windowed, windowStats, type Window } from '../data/downsample';
+import type { ChartType, SeriesRef, TimeRange, WidgetState } from '../types';
+import { dropTarget, draggable, isSeries, seriesPayload } from './dnd';
+import { engine, type SeriesKey } from '../engine';
+import { saveFile } from '../dialogs';
 import { formatTime } from '../data/time';
 import { resolveColor, withAlpha } from '../palette';
-import { cssVar, downloadBlob, formatValue, h, icon, iconButton, lowerBound, nearestIndex, rafThrottle } from '../util';
+import { cssVar, formatCount, formatValue, h, icon, iconButton, rafThrottle } from '../util';
 import { notice, showMenu, type MenuItem } from './overlays';
-import { actions } from '../actions';
+import { project } from '../project';
 
 export const CHART_TYPES: { type: ChartType; label: string; icon: IconNode }[] = [
   { type: 'line', label: '라인', icon: ChartLine },
@@ -42,6 +43,9 @@ export const CHART_TYPES: { type: ChartType; label: string; icon: IconNode }[] =
 ];
 
 type Cell = number | null | undefined;
+type Window = { x: Float64Array; y: Float64Array; raw: number };
+const EMPTY: Window = { x: new Float64Array(0), y: new Float64Array(0), raw: 0 };
+const seriesKey = (s: SeriesRef): SeriesKey => ({ source: s.sourceId, column: s.column });
 
 // 24h, ISO-ish tick labels; second line shows the next-larger unit when it changes (ms timestamps).
 const S = 1000;
@@ -234,7 +238,11 @@ export class ChartWidget {
     return st.series.filter((s) => store.column(s.sourceId, s.column));
   }
 
-  private doRender() {
+  private renderSeq = 0;
+  private legendSeq = 0;
+  private cursorSeq = 0;
+
+  private async doRender() {
     const st = this.state;
     if (!st) return;
     const t0 = performance.now();
@@ -262,17 +270,28 @@ export class ChartWidget {
       return;
     }
     this.curRange = range;
+    const seq = ++this.renderSeq;
 
     const theme = store.ws.settings.theme;
     const stacked = st.type === 'stacked';
     // ~4 points per pixel column keeps M4 visually lossless
     const target = st.maxPoints ? Math.max(st.maxPoints, Math.round(width * 4)) : 0;
+    let res: (Window | null)[];
+    try {
+      res = await engine.window(series.map(seriesKey), range.start, range.end, target);
+    } catch (e) {
+      console.warn('window failed', e);
+      return;
+    }
+    if (seq !== this.renderSeq || !this.state) return; // a newer render superseded this one
     let raw = 0;
-    const wins = series.map((s) => {
-      const { source, col } = store.column(s.sourceId, s.column)!;
-      const w = windowed(source.time, col.values, col.blocks, range.start, range.end, target, s.scale, s.offset);
+    const wins = series.map((s, i) => {
+      const w = res[i] ?? EMPTY;
       raw += w.raw;
-      return w;
+      if (s.scale === 1 && s.offset === 0) return w;
+      const y = new Float64Array(w.y.length);
+      for (let k = 0; k < y.length; k++) y[k] = w.y[k] * s.scale + s.offset;
+      return { x: w.x, y, raw: w.raw };
     });
     const { x, ys } = align(wins);
     let data: Cell[][] = ys;
@@ -457,7 +476,7 @@ export class ChartWidget {
     const names = [...new Set(gone.map((s) => store.ws.sourceMeta?.find((m) => m.id === s.sourceId)?.name ?? '(삭제된 소스)'))];
     this.missing.replaceChildren(
       h('span', {}, `데이터 없음: ${names.join(', ')}`),
-      h('button', { type: 'button', onclick: (() => void actions.openCsv()) as EventListener }, icon(FolderOpen, 14), ' 파일 다시 열기'),
+      h('button', { type: 'button', onclick: (() => void project.restoreMissing()) as EventListener }, icon(FolderOpen, 14), ' 다시 불러오기'),
     );
   }
 
@@ -550,9 +569,9 @@ export class ChartWidget {
     const si = st.yAxis.siPrefix;
     const unit = st.yAxis.unit;
     const tbody = h('tbody');
+    const statCells: HTMLElement[][] = [];
     series.forEach((s, i) => {
-      const { source, col } = store.column(s.sourceId, s.column)!;
-      const stats = windowStats(source.time, col.values, col.blocks, range.start, range.end, s.scale, s.offset);
+      const source = store.sources.get(s.sourceId)!;
       const color = resolveColor(s.color, theme);
       const swatch = h('button', {
         class: `legend-swatch ${s.visible ? '' : 'is-off'}`,
@@ -569,22 +588,16 @@ export class ChartWidget {
       this.valueCells.push(val);
       const row = h(
         'tr',
-        { draggable: 'true', class: s.visible ? '' : 'is-hidden', title: `${source.name} › ${s.column}` },
+        { class: s.visible ? '' : 'is-hidden', title: `${source.name} › ${s.column}` },
         h('td', { class: 'legend-name' }, swatch, h('span', {}, s.label)),
         val,
-        h('td', { class: 'num' }, formatValue(stats.min, si, unit)),
-        h('td', { class: 'num' }, formatValue(stats.max, si, unit)),
-        h('td', { class: 'num' }, formatValue(stats.mean, si, unit)),
+        ...this.statRow(statCells),
       );
-      row.addEventListener('dragstart', (e) => {
-        const payload: SeriesDrag = {
-          items: [{ sourceId: s.sourceId, column: s.column }],
-          fromWidget: { worksheetId: this.wsId, widgetId: this.id, seriesIds: [s.id] },
-        };
-        e.dataTransfer!.setData(DRAG_MIME, JSON.stringify(payload));
-        e.dataTransfer!.setData(DRAG_MOVE_MIME, '1');
-        e.dataTransfer!.effectAllowed = 'copyMove';
-      });
+      draggable(
+        row,
+        () => seriesPayload({ items: [{ sourceId: s.sourceId, column: s.column }], fromWidget: { worksheetId: this.wsId, widgetId: this.id, seriesIds: [s.id] } }),
+        () => `${s.label} — 다른 차트로 이동 (Ctrl: 복사)`,
+      );
       row.addEventListener('mouseenter', () => s.visible && this.u?.setSeries(i + 1, { focus: true }));
       row.addEventListener('mouseleave', () => this.u?.setSeries(null, { focus: false }));
       row.addEventListener('dblclick', () => store.select(this.id));
@@ -602,6 +615,29 @@ export class ChartWidget {
     );
     this.legend.replaceChildren(h('table', { class: 'legend-table' }, head, tbody));
     this.updateCursorValues(this.lastCursor);
+    const seq = ++this.legendSeq;
+    void engine
+      .stats(series.map(seriesKey), range.start, range.end)
+      .then((stats) => {
+        if (seq !== this.legendSeq) return;
+        stats.forEach((st0, i) => {
+          const s = series[i];
+          const t = (v: number | null | undefined) => (v == null ? NaN : v * s.scale + s.offset);
+          const [a, b] = [t(st0?.min), t(st0?.max)];
+          const cells = statCells[i];
+          cells[0].textContent = formatValue(Math.min(a, b), si, unit);
+          cells[1].textContent = formatValue(Math.max(a, b), si, unit);
+          cells[2].textContent = formatValue(t(st0?.mean), si, unit);
+          cells[0].parentElement!.title = `${store.sources.get(s.sourceId)?.name ?? ""} › ${s.column}\n구간 샘플 ${formatCount(st0?.count ?? 0)}개`;
+        });
+      })
+      .catch((e) => console.warn('stats failed', e));
+  }
+
+  private statRow(all: HTMLElement[][]): HTMLElement[] {
+    const cells = [0, 1, 2].map(() => h('td', { class: 'num' }, '…'));
+    all.push(cells);
+    return cells;
   }
 
   // ---------------- crosshair ----------------
@@ -671,43 +707,35 @@ export class ChartWidget {
   private updateCursorValues(x: number | null) {
     const st = this.state;
     if (!st) return;
-    this.loadedSeries(st).forEach((s, i) => {
-      const cell = this.valueCells[i];
-      if (!cell) return;
-      if (x === null) {
-        cell.textContent = '—';
-        return;
-      }
-      const { source, col } = store.column(s.sourceId, s.column)!;
-      const k = nearestIndex(source.time, x);
-      const v = k >= 0 ? col.values[k] * s.scale + s.offset : NaN;
-      cell.textContent = formatValue(v, st.yAxis.siPrefix, st.yAxis.unit);
-    });
+    const series = this.loadedSeries(st);
+    const seq = ++this.cursorSeq;
+    if (x === null || !series.length) {
+      this.valueCells.forEach((c) => (c.textContent = '—'));
+      return;
+    }
+    void engine
+      .values(series.map(seriesKey), x)
+      .then((vals) => {
+        if (seq !== this.cursorSeq) return;
+        series.forEach((s, i) => {
+          const cell = this.valueCells[i];
+          const v = vals[i];
+          if (cell) cell.textContent = formatValue(v == null ? NaN : v * s.scale + s.offset, st.yAxis.siPrefix, st.yAxis.unit);
+        });
+      })
+      .catch(() => undefined);
   }
 
   // ---------------- drop target ----------------
   private bindDrop() {
-    const c = this.content;
-    c.addEventListener('dragover', (e) => {
-      if (!e.dataTransfer?.types.includes(DRAG_MIME)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      e.dataTransfer.dropEffect = e.dataTransfer.types.includes(DRAG_MOVE_MIME) && !(e.altKey || e.ctrlKey) ? 'move' : 'copy';
-      c.classList.add('is-drop-target');
-    });
-    c.addEventListener('dragleave', (e) => {
-      if (!c.contains(e.relatedTarget as Node)) c.classList.remove('is-drop-target');
-    });
-    c.addEventListener('drop', (e) => {
-      c.classList.remove('is-drop-target');
-      const raw = e.dataTransfer?.getData(DRAG_MIME);
-      if (!raw) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const p = JSON.parse(raw) as SeriesDrag;
-      if (p.fromWidget) store.moveSeries(p.fromWidget, this.wsId, this.id, e.altKey || e.ctrlKey);
-      else store.addSeries(this.wsId, this.id, p.items);
-      store.select(this.id);
+    dropTarget(this.content, {
+      accepts: (p) => isSeries(p) && p.data.fromWidget?.widgetId !== this.id,
+      drop: (p, e) => {
+        if (!isSeries(p)) return;
+        if (p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, this.id, e.altKey || e.ctrlKey);
+        else store.addSeries(this.wsId, this.id, p.data.items);
+        store.select(this.id);
+      },
     });
   }
 
@@ -855,35 +883,30 @@ export class ChartWidget {
       x += g.measureText(s.label).width + 32 * dpr;
     }
     const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/png'));
-    if (blob) void downloadBlob(blob, `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`).catch((e: Error) => notice(e.message, 5000, 'error'));
+    if (!blob) return;
+    const path = await saveFile('png', `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`);
+    if (!path) return;
+    try {
+      await engine.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+      notice(`스냅샷 저장: ${path}`);
+    } catch (e) {
+      notice(`저장 실패: ${(e as Error).message}`, 6000, 'error');
+    }
   }
 
-  exportCsv() {
+  /** Export the visible window (raw samples, all series on a union time axis). */
+  async exportCsv() {
     const st = this.state;
     const range = this.renderedRange ?? store.widgetRange(this.wsId, st);
     if (!range) return;
-    const series = st.series.filter((s) => store.column(s.sourceId, s.column));
-    // union of timestamps in the window
-    const stamps = new Set<number>();
-    for (const s of series) {
-      const { source } = store.column(s.sourceId, s.column)!;
-      const i0 = lowerBound(source.time, range.start);
-      const i1 = lowerBound(source.time, range.end + 1e-9);
-      for (let i = i0; i < i1; i++) stamps.add(source.time[i]);
+    const series = this.loadedSeries(st);
+    const path = await saveFile('csv', `${st.title || 'chart'}.csv`);
+    if (!path) return;
+    try {
+      const r = await engine.exportCsv(path, series.map((s) => ({ ...seriesKey(s), label: s.label, scale: s.scale, offset: s.offset })), range.start, range.end);
+      notice(`${formatCount(r.rows)}행을 내보냈습니다: ${path}`);
+    } catch (e) {
+      notice(`내보내기 실패: ${(e as Error).message}`, 6000, 'error');
     }
-    const times = Float64Array.from(stamps).sort();
-    const cols = series.map((s) => {
-      const { source, col } = store.column(s.sourceId, s.column)!;
-      return (t: number) => {
-        const k = lowerBound(source.time, t);
-        if (source.time[k] !== t) return '';
-        const v = col.values[k];
-        return Number.isNaN(v) ? '' : String(v * s.scale + s.offset);
-      };
-    });
-    const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-    const lines = [['timestamp', ...series.map((s) => esc(s.label))].join(',')];
-    for (const t of times) lines.push([formatTime(t, true), ...cols.map((f) => f(t))].join(','));
-    void downloadBlob(new Blob([lines.join('\n')], { type: 'text/csv' }), `${st.title || 'chart'}.csv`).catch((e: Error) => notice(e.message, 5000, 'error'));
   }
 }

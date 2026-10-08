@@ -1,6 +1,6 @@
 import type {
   ChartType,
-  DataSource,
+  SourceInfo,
   SourceMeta,
   SeriesRef,
   Settings,
@@ -10,8 +10,6 @@ import type {
   Worksheet,
 } from './types';
 import { debounce, uid } from './util';
-import { sourceBytes, sourceDb } from './data/db';
-import { fsaSupported } from './fs/fsa';
 import { nextSlot, slotColor } from './palette';
 
 type Events = {
@@ -41,7 +39,6 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultMaxPoints: 4000,
   dragMode: 'zoom',
   zoomY: false,
-  cacheLimitMb: 400,
 };
 
 function newWorksheet(name: string): Worksheet {
@@ -76,7 +73,7 @@ interface History {
 }
 
 class Store {
-  sources = new Map<string, DataSource>();
+  sources = new Map<string, SourceInfo>();
   ws: Workspace;
   private handlers = new Map<keyof Events, Set<Handler<never>>>();
   private history = new Map<string, History>();
@@ -128,14 +125,13 @@ class Store {
     }
   }, 300);
 
-  replaceWorkspace(w: Workspace, sources: DataSource[], cacheInDb = true) {
+  replaceWorkspace(w: Workspace, sources: SourceInfo[]) {
     this.sources = new Map(sources.map((s) => [s.id, s]));
     this.ws = { ...w, settings: { ...DEFAULT_SETTINGS, ...w.settings } };
-    if (!this.ws.worksheets.length) this.ws.worksheets.push(newWorksheet('Worksheet 1'));
+    if (!this.ws.worksheets?.length) this.ws.worksheets = [newWorksheet('Worksheet 1')];
     if (!this.ws.worksheets.some((s) => s.id === this.ws.activeId)) this.ws.activeId = this.ws.worksheets[0].id;
     this.history.clear();
     for (const src of sources) this.upsertMeta(src);
-    void sourceDb.clear().then(() => (cacheInDb ? Promise.all(sources.map((s) => this.cache(s))) : []));
     this.emit('sources', undefined);
     this.emit('settings', undefined);
     this.emit('worksheets', undefined);
@@ -143,33 +139,8 @@ class Store {
   }
 
   // ---------- sources ----------
-  /** Sources kept in IndexedDB so they survive a reload (large ones are skipped). */
-  readonly uncached = new Set<string>();
-
-  private cache(s: DataSource) {
-    // without folder access the browser copy is the only persistence, so keep everything
-    const limitMb = fsaSupported ? this.ws.settings.cacheLimitMb : Infinity;
-    if (sourceBytes(s) > limitMb * 1024 * 1024) {
-      this.uncached.add(s.id);
-      return sourceDb.delete(s.id);
-    }
-    this.uncached.delete(s.id);
-    return sourceDb.put(s);
-  }
-
-  private upsertMeta(s: DataSource) {
-    const meta: SourceMeta = {
-      id: s.id,
-      name: s.name,
-      size: s.size,
-      rows: s.time.length,
-      columns: s.columns.map((c) => c.name),
-      start: s.time[0],
-      end: s.time[s.time.length - 1],
-      path: s.path,
-      lastModified: s.lastModified,
-      import: s.import,
-    };
+  private upsertMeta(s: SourceInfo) {
+    const meta: SourceMeta = { id: s.id, name: s.name, path: s.path, columns: s.columns.map((c) => c.name), import: s.import };
     const list = (this.ws.sourceMeta ??= []);
     const i = list.findIndex((m) => m.id === s.id);
     if (i >= 0) list[i] = meta;
@@ -181,36 +152,22 @@ class Store {
     return (this.ws.sourceMeta ?? []).filter((m) => !this.sources.has(m.id));
   }
 
-  missingSourceFor(fileName: string, path?: string | null): SourceMeta | undefined {
-    const missing = this.missingSources();
-    return (path ? missing.find((m) => m.path === path) : undefined) ?? missing.find((m) => m.name === fileName);
-  }
-
-  sourceByPath(path: string): DataSource | undefined {
+  sourceByPath(path: string): SourceInfo | undefined {
     for (const s of this.sources.values()) if (s.path === path) return s;
     return undefined;
   }
 
-  addSource(s: DataSource) {
+  addSource(s: SourceInfo) {
     this.sources.set(s.id, s);
     this.upsertMeta(s);
-    void this.cache(s);
     this.emit('sources', undefined);
     // a re-linked source brings its charts back
     for (const ws of this.ws.worksheets) if (ws.widgets.some((w) => w.series.some((x) => x.sourceId === s.id))) this.emit('range', ws.id);
   }
 
-  /** Forget a source that is referenced but not loaded. */
-  dropMissing(id: string) {
-    this.ws.sourceMeta = (this.ws.sourceMeta ?? []).filter((m) => m.id !== id);
-    this.removeSource(id);
-  }
-
   removeSource(id: string) {
     this.sources.delete(id);
-    this.uncached.delete(id);
     this.ws.sourceMeta = (this.ws.sourceMeta ?? []).filter((m) => m.id !== id);
-    void sourceDb.delete(id);
     for (const ws of this.ws.worksheets) {
       let changed = false;
       for (const w of ws.widgets) {
@@ -472,9 +429,9 @@ class Store {
       if (seen.has(s.sourceId)) continue;
       seen.add(s.sourceId);
       const src = this.sources.get(s.sourceId);
-      if (!src || !src.time.length) continue;
-      start = Math.min(start, src.time[0]);
-      end = Math.max(end, src.time[src.time.length - 1]);
+      if (!src || !src.rows) continue;
+      start = Math.min(start, src.start);
+      end = Math.max(end, src.end);
     }
     if (!Number.isFinite(start)) return null;
     if (start === end) return { start: start - 1000, end: end + 1000 };

@@ -1,13 +1,13 @@
 import { defineConfig } from 'vite';
-import { viteSingleFile } from 'vite-plugin-singlefile';
 
-// `vite build --mode single` → one self-contained HTML file (opens from disk, no server).
-export default defineConfig(({ mode }) => ({
+// Frontend of the Tauri desktop app (src-tauri). `npm run dev` alone serves the
+// UI for browser tests against the engine bridge (?bridge=http://127.0.0.1:7878).
+export default defineConfig({
   base: './',
-  worker: { format: 'es' },
-  plugins: mode === 'single' ? [viteSingleFile()] : [],
+  clearScreen: false,
+  server: { port: 5173, strictPort: true },
   build: {
-    chunkSizeWarningLimit: 6000,
-    outDir: mode === 'single' ? 'dist-single' : 'dist',
+    target: 'es2022',
+    chunkSizeWarningLimit: 2000,
   },
-}));
+});

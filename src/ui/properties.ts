@@ -86,7 +86,7 @@ export class PropertiesPanel {
     const ws = store.active;
     const r = store.sheetRange(ws.id);
     const ext = store.sheetExtent(ws.id);
-    const points = ws.widgets.reduce((n, w) => n + w.series.reduce((m, s) => m + (store.sources.get(s.sourceId)?.time.length ?? 0), 0), 0);
+    const points = ws.widgets.reduce((n, w) => n + w.series.reduce((m, s) => m + (store.sources.get(s.sourceId)?.rows ?? 0), 0), 0);
     this.section(
       '워크시트',
       row('이름', textInput(ws.name, (v) => store.renameWorksheet(ws.id, v))),
@@ -112,11 +112,6 @@ export class PropertiesPanel {
         '기본 최대 포인트',
         numInput(s.defaultMaxPoints, (v) => store.updateSettings({ defaultMaxPoints: Math.max(0, v ?? 0) }), '4000', '500'),
         '새 위젯의 시리즈당 렌더 포인트 (0 = 제한 없음)',
-      ),
-      row(
-        '브라우저 캐시 한도 (MB)',
-        numInput(s.cacheLimitMb, (v) => store.updateSettings({ cacheLimitMb: Math.max(0, v ?? 0) }), '400', '50'),
-        '새로고침 시 빠른 복원용 브라우저 사본. 워크스페이스 파일에는 크기와 관계없이 항상 저장됨',
       ),
     );
     this.body.append(h('div', { class: 'prop-hint' }, '위젯을 클릭하면 해당 위젯의 속성이 여기에 표시됩니다.'));

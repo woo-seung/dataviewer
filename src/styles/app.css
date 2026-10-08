@@ -987,7 +987,12 @@ label.checkbox-container::after {
 }
 .drag-ghost {
   position: fixed;
-  top: -100px;
+  top: 0;
+  left: 0;
+  z-index: 2000;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: var(--shadow-s);
   padding: 4px 10px;
   border-radius: var(--radius-s);
   background: var(--interactive-accent);
@@ -1682,4 +1687,41 @@ label.checkbox-container::after {
 }
 .setting-item-description.is-warning {
   color: var(--text-error);
+}
+
+body.is-dragging,
+body.is-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+.recent-section {
+  padding: 0 6px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 8px;
+}
+.recent-actions {
+  display: flex;
+  gap: 2px;
+  padding: 2px 4px 4px;
+}
+.recent-caption {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 8px 10px 2px;
+}
+.recent-section .nav-file-title .clickable-icon {
+  padding: 2px;
+  opacity: 0;
+}
+.recent-section .nav-file-title:hover .clickable-icon,
+.recent-section .nav-file-title.is-active .clickable-icon {
+  opacity: 1;
+}
+.section-title.is-first {
+  border-top: 0;
+  margin-top: 0;
+}
+.tree-item-self.is-orphan .tree-item-inner {
+  color: var(--text-faint);
+  font-style: italic;
 }

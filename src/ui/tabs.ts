@@ -1,10 +1,9 @@
 import { Copy, LayoutDashboard, Pencil, Plus, X } from 'lucide';
 import { store } from '../store';
-import { DRAG_MIME } from '../types';
+import { draggable, dropTarget, isSeries } from './dnd';
 import { h, icon, iconButton } from '../util';
 import { showMenu } from './overlays';
 
-const TAB_MIME = 'application/x-chronos-tab';
 
 export class TabBar {
   readonly el: HTMLElement;
@@ -35,7 +34,6 @@ export class TabBar {
           class: `workspace-tab-header ${active ? 'is-active mod-active' : ''}`,
           role: 'tab',
           'aria-selected': String(active),
-          draggable: 'true',
           title: ws.name,
         },
         h(
@@ -71,34 +69,24 @@ export class TabBar {
           { x: e.clientX, y: e.clientY },
         );
       });
-      // reorder
-      tab.addEventListener('dragstart', (e) => {
-        e.dataTransfer!.setData(TAB_MIME, ws.id);
-        e.dataTransfer!.effectAllowed = 'move';
-      });
+      // reorder by dragging; hovering a dragged series over a tab switches to it
+      draggable(tab, () => ({ kind: 'tab', id: ws.id }), () => ws.name);
       let hoverTimer: ReturnType<typeof setTimeout> | undefined;
-      tab.addEventListener('dragover', (e) => {
-        const types = e.dataTransfer?.types ?? [];
-        if (types.includes(TAB_MIME)) {
-          e.preventDefault();
-          tab.classList.add('is-drop-target');
-        } else if (types.includes(DRAG_MIME) && !active && !hoverTimer) {
-          // hovering a series over a tab switches to it
-          hoverTimer = setTimeout(() => store.setActive(ws.id), 450);
-        }
-      });
-      tab.addEventListener('dragleave', () => {
-        tab.classList.remove('is-drop-target');
-        clearTimeout(hoverTimer);
-        hoverTimer = undefined;
-      });
-      tab.addEventListener('drop', (e) => {
-        tab.classList.remove('is-drop-target');
-        const id = e.dataTransfer?.getData(TAB_MIME);
-        if (id) {
-          e.preventDefault();
-          store.moveWorksheet(id, idx);
-        }
+      dropTarget(tab, {
+        accepts: (p) => (p.kind === 'tab' && p.id !== ws.id) || (isSeries(p) && !active),
+        over: (p) => {
+          if (isSeries(p) && !hoverTimer) hoverTimer = setTimeout(() => store.setActive(ws.id), 450);
+        },
+        leave: () => {
+          clearTimeout(hoverTimer);
+          hoverTimer = undefined;
+        },
+        drop: (p) => {
+          clearTimeout(hoverTimer);
+          hoverTimer = undefined;
+          if (p.kind === 'tab') store.moveWorksheet(p.id, idx);
+          else store.setActive(ws.id);
+        },
       });
       this.list.append(tab);
     });

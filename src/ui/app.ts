@@ -10,17 +10,21 @@ import {
   SlidersHorizontal,
   Sparkles,
   Sun,
-  Upload,
   Files,
-  Folder,
+  LayoutDashboard,
 } from 'lucide';
 import { store } from '../store';
 import { actions } from '../actions';
 import { project } from '../project';
-import { fsaSupported } from '../fs/fsa';
+import { isDesktop } from '../engine';
+
+async function setWindowTitle(t: string) {
+  if (!isDesktop) return;
+  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+  await getCurrentWindow().setTitle(t).catch(() => undefined);
+}
 import { formatTime } from '../data/time';
 import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
-import { sourceBytes } from '../data/db';
 import { ChartWidget } from './chartWidget';
 import { openCommandPalette, type Command } from './commandPalette';
 import { Explorer } from './explorer';
@@ -59,13 +63,12 @@ export class App {
         'div',
         { class: 'side-dock-actions' },
         ribbonBtn(PanelLeft, '왼쪽 사이드바 (Ctrl+[)', () => actions.toggleLeft()),
-        ribbonBtn(FolderOpen, 'CSV 열기 (Ctrl+O)', () => void actions.openCsv()),
+        ribbonBtn(FolderOpen, 'CSV 열기 (Ctrl+Shift+O)', () => void actions.openCsv()),
         ribbonBtn(Sparkles, '샘플 데이터', () => void actions.loadSample()),
         ribbonBtn(FilePlus, '새 워크시트 (Alt+T)', () => store.addWorksheet()),
         ribbonBtn(CommandIcon, '명령 팔레트 (Ctrl+P)', () => this.palette()),
-        ribbonBtn(Folder, '작업 폴더 열기', () => void actions.openFolder()),
+        ribbonBtn(LayoutDashboard, '워크스페이스 열기 (Ctrl+O)', () => void actions.openWorkspace()),
         ribbonBtn(Save, '워크스페이스 저장 (Ctrl+S)', () => void actions.saveWorkspace()),
-        ribbonBtn(Upload, '워크스페이스 열기', () => void actions.openWorkspace()),
       ),
       h('div', { class: 'side-dock-settings' }, this.themeBtn, ribbonBtn(CircleHelp, '도움말 / 단축키', () => this.help())),
     );
@@ -174,18 +177,18 @@ export class App {
   }
 
   private updateFileStatus() {
-    const f = project.file;
-    const root = project.root?.name;
-    const label = f ? (f.path ?? f.name) : fsaSupported ? '저장되지 않은 워크스페이스' : '브라우저에 자동 보관';
-    this.status.file.textContent = `${root ? `📁 ${root} · ` : ''}${label}${project.saving ? ' · 저장 중…' : project.dirty ? ' ●' : ''}`;
-    this.status.file.title = project.dirty ? '저장되지 않은 변경 (Ctrl+S)' : '';
-    document.title = `${f ? f.name.replace(/\.chronos$/i, '') : 'Chronos Vault'}${project.dirty ? ' •' : ''}`;
+    const label = project.untitled ? 'Untitled (자동 보관)' : (project.path ?? '');
+    this.status.file.textContent = `${label}${project.saving ? ' · 저장 중…' : project.dirty ? ' ●' : ''}`;
+    this.status.file.title = project.dirty ? '저장되지 않은 변경 (Ctrl+S)' : project.untitled ? '작업은 앱 데이터 폴더에 자동 보관됩니다. Ctrl+S로 원하는 위치에 저장하세요.' : '';
+    const title = `${project.title}${project.dirty ? ' •' : ''} — Chronos Vault`;
+    document.title = title;
+    void setWindowTitle(title);
   }
 
   private updateStatus() {
     const n = store.sources.size;
-    const rows = [...store.sources.values()].reduce((a, s) => a + s.time.length * s.columns.length, 0);
-    const bytes = [...store.sources.values()].reduce((a, s) => a + sourceBytes(s), 0);
+    const rows = [...store.sources.values()].reduce((a, s) => a + s.rows * s.columns.length, 0);
+    const bytes = [...store.sources.values()].reduce((a, s) => a + s.bytes, 0);
     this.status.sources.textContent = `${n}개 소스 · ${formatCount(rows)} 포인트 · ${formatBytes(bytes)}`;
     let raw = 0;
     let shown = 0;
@@ -227,8 +230,7 @@ export class App {
       { id: 'save', name: '워크스페이스 저장 (.chronos, 전처리 포함)', hotkey: 'Ctrl+S', run: () => void actions.saveWorkspace() },
       { id: 'save-as', name: '워크스페이스 다른 이름으로 저장', hotkey: 'Ctrl+Shift+S', run: () => void actions.saveWorkspaceAs() },
       { id: 'load', name: '워크스페이스 열기', run: () => void actions.openWorkspace() },
-      { id: 'folder', name: '작업 폴더 열기', run: () => void actions.openFolder() },
-      { id: 'reset', name: '워크스페이스 초기화', run: () => void actions.resetWorkspace() },
+      { id: 'new', name: '새 워크스페이스', run: () => void actions.newWorkspace() },
       { id: 'help', name: '도움말 / 단축키', run: () => this.help() },
     ];
     const sel = store.ws.selectedWidgetId;
@@ -256,8 +258,10 @@ export class App {
     const m = modal('도움말 · 단축키', { width: 620 });
     const keys: [string, string][] = [
       ['Ctrl+P', '명령 팔레트'],
-      ['Ctrl+O', 'CSV 열기'],
-      ['Ctrl+S', '워크스페이스 저장'],
+      ['Ctrl+O', '워크스페이스(.chronos) 열기'],
+      ['Ctrl+Shift+O', 'CSV 열기'],
+      ['Ctrl+S / Ctrl+Shift+S', '저장 / 다른 이름으로 저장'],
+      ['Ctrl+N', '새 워크스페이스'],
       ['Alt+T', '새 워크시트'],
       ['Ctrl+[ / Ctrl+]', '왼쪽 / 오른쪽 사이드바'],
       ['← / →', '시간축 이동'],
@@ -275,9 +279,9 @@ export class App {
       h(
         'ul',
         { class: 'help-list' },
-        h('li', {}, '작업 폴더를 열면(리본의 폴더 아이콘) 폴더 안의 CSV와 워크스페이스(.chronos)가 탐색기에 표시됩니다.'),
-        h('li', {}, '워크스페이스 파일에는 CSV의 상대경로와 전처리 결과(파싱된 값 + 인덱스)가 항상 함께 저장됩니다. 다시 열면 CSV가 그대로면 저장된 전처리를, 바뀌었으면 같은 설정으로 다시 처리해 사용합니다.'),
-        h('li', {}, 'CSV를 창에 드래그하거나 CSV 열기로 불러옵니다. 시간 열과 형식은 자동 감지됩니다.'),
+        h('li', {}, 'CSV를 창에 끌어다 놓거나 CSV 열기(Ctrl+Shift+O)로 불러옵니다. 시간 열·형식·구분자는 자동 감지되며 파일 크기 제한이 없습니다.'),
+        h('li', {}, '워크스페이스(.chronos)에는 레이아웃, CSV 경로(절대 + 워크스페이스 기준 상대), 전처리 결과(파싱된 값 + 인덱스)가 함께 저장됩니다. 다시 열면 CSV가 그대로면 저장된 전처리를 바로 쓰고, 바뀌었으면 같은 설정으로 자동 재처리합니다.'),
+        h('li', {}, '저장하기 전의 작업은 "Untitled"로 앱 데이터 폴더에 자동 보관되어, 다음 실행 때 그대로 복원됩니다. .chronos 파일을 더블클릭해도 열립니다.'),
         h('li', {}, '탐색기에서 열(시리즈)을 위젯 위로 끌면 추가, 빈 공간으로 끌면 새 위젯이 생성됩니다. Ctrl/Shift로 다중 선택.'),
         h('li', {}, '범례 행을 다른 위젯으로 끌면 시리즈가 이동합니다 (Alt/Ctrl 누르면 복사).'),
         h('li', {}, '위젯 헤더를 끌어 배치를, 모서리를 끌어 크기를 조절합니다.'),
@@ -302,7 +306,12 @@ export class App {
       }
       if (mod && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        void actions.openCsv();
+        void (e.shiftKey ? actions.openCsv() : actions.openWorkspace());
+        return;
+      }
+      if (mod && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        void actions.newWorkspace();
         return;
       }
       if (mod && e.key.toLowerCase() === 's') {
@@ -346,36 +355,15 @@ export class App {
     });
   }
 
+  /** OS file drops: the desktop webview reports real paths. */
   private bindFileDrop() {
-    let depth = 0;
-    const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files');
-    window.addEventListener('dragenter', (e) => {
-      if (!hasFiles(e)) return;
-      depth++;
-      this.root.classList.add('is-file-dragging');
-    });
-    window.addEventListener('dragleave', (e) => {
-      if (!hasFiles(e)) return;
-      depth = Math.max(0, depth - 1);
-      if (!depth) this.root.classList.remove('is-file-dragging');
-    });
-    window.addEventListener('dragover', (e) => {
-      if (hasFiles(e)) e.preventDefault();
-    });
-    window.addEventListener('drop', (e) => {
-      if (!hasFiles(e)) return;
-      e.preventDefault();
-      depth = 0;
-      this.root.classList.remove('is-file-dragging');
-      // handles must be requested synchronously inside the drop event
-      const items = Array.from(e.dataTransfer!.items).filter((i) => i.kind === 'file');
-      type WithHandle = DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> };
-      const pending = items.map((i) => {
-        const it = i as WithHandle;
-        const file = it.getAsFile();
-        return it.getAsFileSystemHandle ? it.getAsFileSystemHandle().then((h) => h ?? file) : Promise.resolve(file);
-      });
-      void Promise.all(pending).then((list) => actions.openDropped(list.filter((x): x is FileSystemHandle | File => !!x)));
-    });
+    if (!isDesktop) return;
+    void import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
+      getCurrentWebview().onDragDropEvent((e) => {
+        const t = e.payload.type;
+        this.root.classList.toggle('is-file-dragging', t === 'enter' || t === 'over');
+        if (t === 'drop') void actions.openDropped(e.payload.paths);
+      }),
+    );
   }
 }

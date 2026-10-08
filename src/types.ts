@@ -1,4 +1,3 @@
-import type { Blocks } from './data/blocks';
 import type { TimeFormat } from './data/time';
 
 /** How a CSV was imported, by column name, so it can be re-imported without asking. */
@@ -11,34 +10,35 @@ export interface ImportSettings {
   compact: boolean;
 }
 
-/** A parsed CSV file: one shared time axis and N numeric columns. */
-export interface DataSource {
+/** A loaded data source as the engine describes it (the data itself stays in the engine). */
+export interface SourceInfo {
   id: string;
   name: string;
-  /** Original file size in bytes (informational). */
+  /** Absolute path of the original CSV. */
+  path: string;
   size: number;
+  lastModified: number;
   importedAt: number;
   timeColumn: string;
-  /** Epoch milliseconds, sorted ascending. */
-  time: Float64Array;
-  columns: SourceColumn[];
-  /** Path of the original CSV relative to the work folder root, when known. */
-  path?: string;
-  /** Original file's mtime, used to detect a changed CSV. */
-  lastModified?: number;
-  import?: ImportSettings;
+  import: ImportSettings;
+  rows: number;
+  /** Epoch ms of the first / last sample. */
+  start: number;
+  end: number;
+  compact: boolean;
+  /** Memory used by the parsed data. */
+  bytes: number;
+  columns: ColumnInfo[];
+  /** Loaded from the workspace file because the CSV was not found. */
+  missingOriginal: boolean;
 }
 
-export interface SourceColumn {
+export interface ColumnInfo {
   name: string;
-  /** Float32 when imported in compact mode (half the memory). */
-  values: Float64Array | Float32Array;
-  /** Summary index for fast window stats / downsampling (saved in .chronos files). */
-  blocks?: Blocks;
-  /** Precomputed over the whole column (NaN skipped). */
-  min: number;
-  max: number;
-  mean: number;
+  /** Over the whole column (null when empty). */
+  min: number | null;
+  max: number | null;
+  mean: number | null;
 }
 
 export type ChartType = 'line' | 'area' | 'stacked' | 'scatter' | 'step';
@@ -113,36 +113,24 @@ export interface Settings {
   dragMode: 'zoom' | 'pan';
   /** Allow box-zoom / wheel-zoom on the value axis too. */
   zoomY: boolean;
-  /** Sources larger than this (MB of arrays) are not cached in IndexedDB. */
-  cacheLimitMb: number;
 }
 
 /**
- * Lightweight description of a source kept in the workspace, so charts survive
- * a reload even when the data itself was too large to cache: re-opening the
- * same file re-links it by name.
+ * What the layout remembers about each source, so charts can be restored by
+ * re-importing the original CSV when no workspace file holds its data.
  */
 export interface SourceMeta {
   id: string;
   name: string;
-  size: number;
-  rows: number;
+  path: string;
   columns: string[];
-  start: number;
-  end: number;
-  path?: string;
-  /** Path relative to the workspace file (as stored in a .chronos file). */
-  rel?: string;
-  lastModified?: number;
-  import?: ImportSettings;
+  import: ImportSettings;
 }
 
 export interface Workspace {
   version: 1;
   worksheets: Worksheet[];
   sourceMeta?: SourceMeta[];
-  /** Linked workspace file (root-relative path inside the work folder). */
-  file?: { name: string; path?: string };
   activeId: string;
   selectedWidgetId: string | null;
   settings: Settings;
