@@ -375,8 +375,9 @@ label.checkbox-container::after {
 .workspace-tab-header {
   height: 100%;
   min-width: 90px;
-  max-width: 220px;
-  flex: 0 1 200px;
+  max-width: 240px;
+  /* as wide as the name; the bar scrolls when tabs don't fit */
+  flex: 0 0 auto;
   border-radius: var(--radius-m) var(--radius-m) 0 0;
   color: var(--text-muted);
   cursor: pointer;
@@ -502,7 +503,7 @@ label.checkbox-container::after {
     display: none;
   }
   .view-header .time-input {
-    width: 150px;
+    width: calc(16ch + 46px);
   }
 }
 @container (max-width: 600px) {
@@ -531,12 +532,47 @@ label.checkbox-container::after {
 .toolbar-button:hover {
   color: var(--text-normal);
 }
+.time-field {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
 .time-input {
   font-family: var(--font-monospace);
   font-size: 12px !important;
-  width: 222px;
+  /* "YYYY-MM-DD HH:MM:SS" + room for the calendar button */
+  width: calc(19ch + 46px);
   height: 26px !important;
+  padding-right: 26px !important;
   background: var(--background-primary-alt) !important;
+}
+.time-input.is-invalid {
+  border-color: var(--text-error) !important;
+}
+.time-input:disabled {
+  opacity: 0.6;
+}
+.time-field .time-picker-btn {
+  position: absolute;
+  right: 2px;
+  padding: 3px;
+  color: var(--text-faint);
+}
+.time-field .time-picker-btn:hover {
+  color: var(--text-normal);
+}
+/* invisible, anchored under the field so the calendar opens there */
+.time-picker {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
 }
 .range-sep {
   color: var(--text-faint);
@@ -1784,9 +1820,6 @@ body.is-dragging .tile-gutter {
   }
   .is-collapsed {
     box-shadow: none !important;
-  }
-  .time-input {
-    width: 172px;
   }
   .import-grid {
     grid-template-columns: 1fr;

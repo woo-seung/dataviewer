@@ -20,7 +20,8 @@ import { store } from '../store';
 import type { TimeRange } from '../types';
 import { MIN_TILE, type Tile } from '../layout';
 import { dropTarget, isSeries } from './dnd';
-import { formatDuration, fromInputValue, toInputValue } from '../data/time';
+import { formatDuration } from '../data/time';
+import { timeField, type TimeField } from './timeField';
 import { h, icon, iconButton } from '../util';
 import { ChartWidget } from './chartWidget';
 import { showMenu } from './overlays';
@@ -48,8 +49,8 @@ export class WorksheetView {
   private rootRows: { split: Tile & { kind: 'split' }; kids: HTMLElement[] } | null = null;
   private widgets = new Map<string, ChartWidget>();
   private unsub: (() => void)[] = [];
-  private fromInput: HTMLInputElement;
-  private toInput: HTMLInputElement;
+  private fromField: TimeField;
+  private toField: TimeField;
   private backBtn: HTMLButtonElement;
   private fwdBtn: HTMLButtonElement;
   private crossBtn: HTMLButtonElement;
@@ -60,16 +61,17 @@ export class WorksheetView {
   constructor(readonly wsId: string) {
     this.backBtn = iconButton(ArrowLeft, '뒤로 (Alt+←)', () => store.back(this.wsId));
     this.fwdBtn = iconButton(ArrowRight, '앞으로 (Alt+→)', () => store.forward(this.wsId));
-    this.fromInput = h('input', { type: 'datetime-local', step: '1', class: 'time-input', 'aria-label': '시작 시각' });
-    this.toInput = h('input', { type: 'datetime-local', step: '1', class: 'time-input', 'aria-label': '종료 시각' });
-    const applyInputs = () => {
-      const a = fromInputValue(this.fromInput.value);
-      const b = fromInputValue(this.toInput.value);
-      if (Number.isFinite(a) && Number.isFinite(b) && b > a) store.setRange(this.wsId, { start: a, end: b });
-      else this.syncToolbar();
-    };
-    this.fromInput.addEventListener('change', applyInputs);
-    this.toInput.addEventListener('change', applyInputs);
+    // typing a start after the end (or an end before the start) moves the window instead
+    this.fromField = timeField('시작 시각', (a) => {
+      const r = store.sheetRange(this.wsId);
+      if (!r) return;
+      store.setRange(this.wsId, a < r.end ? { start: a, end: r.end } : { start: a, end: a + (r.end - r.start) });
+    });
+    this.toField = timeField('종료 시각', (b) => {
+      const r = store.sheetRange(this.wsId);
+      if (!r) return;
+      store.setRange(this.wsId, b > r.start ? { start: r.start, end: b } : { start: b - (r.end - r.start), end: b });
+    });
     this.durLabel = h('span', { class: 'range-duration' });
     this.crossBtn = iconButton(Crosshair, '크로스헤어 동기화', () => {
       const ws = store.sheet(this.wsId)!;
@@ -102,9 +104,9 @@ export class WorksheetView {
         { class: 'view-header-range' },
         presetBtn,
         optional(iconButton(ChevronLeft, '왼쪽으로 이동 (←)', () => this.pan(-0.25))),
-        this.fromInput,
+        this.fromField.el,
         h('span', { class: 'range-sep' }, '→'),
-        this.toInput,
+        this.toField.el,
         optional(iconButton(ChevronRight, '오른쪽으로 이동 (→)', () => this.pan(0.25))),
         optional(iconButton(ZoomIn, '확대 (+)', () => this.zoom(0.5))),
         optional(iconButton(ZoomOut, '축소 (-)', () => this.zoom(2))),
@@ -335,12 +337,12 @@ export class WorksheetView {
     this.backBtn.disabled = !store.canBack(this.wsId);
     this.fwdBtn.disabled = !store.canForward(this.wsId);
     if (r) {
-      if (document.activeElement !== this.fromInput) this.fromInput.value = toInputValue(r.start);
-      if (document.activeElement !== this.toInput) this.toInput.value = toInputValue(r.end);
+      this.fromField.set(r.start);
+      this.toField.set(r.end);
       this.durLabel.textContent = `${formatDuration(r.end - r.start)}${ws.range ? '' : ' · 전체'}`;
     } else {
-      this.fromInput.value = '';
-      this.toInput.value = '';
+      this.fromField.set(null);
+      this.toField.set(null);
       this.durLabel.textContent = '데이터 없음';
     }
     this.crossBtn.classList.toggle('is-active', ws.crosshair);
