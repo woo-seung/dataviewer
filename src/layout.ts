@@ -215,3 +215,72 @@ export function renameLeaves(t: Tile | null | undefined, map: Map<string, string
   if (t.kind === 'leaf') return leaf(map.get(t.id) ?? t.id);
   return { ...t, id: uid('t'), children: t.children.map((c) => renameLeaves(c, map)!) };
 }
+
+/** Widgets stacked top-to-bottom (`v`) or side by side (`h`) through a tile. */
+function count(t: Tile, axis: 'h' | 'v'): number {
+  if (t.kind === 'leaf') return 1;
+  const along = (axis === 'v' && t.dir === 'col') || (axis === 'h' && t.dir === 'row');
+  const n = t.children.map((c) => count(c, axis));
+  return along ? n.reduce((a, b) => a + b, 0) : Math.max(...n);
+}
+
+/**
+ * Even out widget heights (`v`), widths (`h`) or both, like PowerPoint's
+ * "distribute": each split shares its space by how many widgets are stacked
+ * in each part, so every widget ends up the same size along that axis.
+ */
+export function distribute(t: Tile, axis: 'h' | 'v' | 'both'): Tile {
+  if (t.kind === 'leaf') return t;
+  const children = t.children.map((c) => distribute(c, axis));
+  const hits = axis === 'both' || (axis === 'v' && t.dir === 'col') || (axis === 'h' && t.dir === 'row');
+  if (!hits) return { ...t, children };
+  const a = t.dir === 'col' ? 'v' : 'h';
+  const n = children.map((c) => count(c, a));
+  const total = n.reduce((x, y) => x + y, 0);
+  return { ...t, children, sizes: n.map((k) => k / total) };
+}
+
+/** Path of splits from the root down to a widget. */
+function pathTo(t: Tile, id: string): (Tile & { kind: 'split' })[] | null {
+  if (t.kind === 'leaf') return t.id === id ? [] : null;
+  for (const c of t.children) {
+    const p = pathTo(c, id);
+    if (p) return [t, ...p];
+  }
+  return null;
+}
+
+/** Distribute only within the column (`v`) or row (`h`) that holds the widget. */
+export function distributeAround(t: Tile, id: string, axis: 'h' | 'v'): Tile {
+  const dir = axis === 'v' ? 'col' : 'row';
+  const scope = pathTo(t, id)
+    ?.filter((s) => s.dir === dir)
+    .pop();
+  if (!scope) return t;
+  const replace = (n: Tile): Tile => (n === scope ? distribute(n, axis) : n.kind === 'leaf' ? n : { ...n, children: n.children.map(replace) });
+  return replace(t);
+}
+
+/** The widget right next to `id` on one side (most shared edge), if any. */
+export function neighbor(t: Tile, id: string, side: Side): string | null {
+  const rs = new Map<string, Rect>();
+  rects(t, { x: 0, y: 0, w: 1, h: 1 }, rs);
+  const r = rs.get(id);
+  if (!r) return null;
+  const eps = 1e-6;
+  let best: string | null = null;
+  let bestOverlap = eps;
+  for (const [other, o] of rs) {
+    if (other === id) continue;
+    const touches =
+      side === 'left' ? Math.abs(o.x + o.w - r.x) < eps : side === 'right' ? Math.abs(r.x + r.w - o.x) < eps : side === 'top' ? Math.abs(o.y + o.h - r.y) < eps : Math.abs(r.y + r.h - o.y) < eps;
+    if (!touches) continue;
+    const overlap =
+      side === 'left' || side === 'right' ? Math.min(r.y + r.h, o.y + o.h) - Math.max(r.y, o.y) : Math.min(r.x + r.w, o.x + o.w) - Math.max(r.x, o.x);
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      best = other;
+    }
+  }
+  return best;
+}

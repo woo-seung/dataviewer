@@ -11,7 +11,7 @@ import type {
 } from './types';
 import { debounce, uid } from './util';
 import { nextSlot, slotColor } from './palette';
-import { equalize, fromGrid, insertAt, insertAuto, reconcile, remove, renameLeaves, setSizes, swap, type Side, type Tile } from './layout';
+import { distribute, distributeAround, equalize, fromGrid, neighbor, insertAt, insertAuto, reconcile, remove, renameLeaves, setSizes, swap, type Side, type Tile } from './layout';
 
 type Events = {
   sources: void;
@@ -348,6 +348,20 @@ class Store {
     this.onChange?.('widgets');
   }
 
+  /** PowerPoint-style distribute: equal widget heights / widths, sheet-wide or in one widget's column / row. */
+  distributeTiles(wsId: string, axis: 'h' | 'v' | 'both', around?: string) {
+    const t = this.layoutOf(wsId);
+    if (!t) return;
+    this.setTiles(wsId, around && axis !== 'both' ? distributeAround(t, around, axis) : distribute(t, axis));
+    this.emit('widgets', wsId);
+  }
+
+  /** The widget next to `id` on a side (for "swap with the one above" etc.). */
+  neighborTile(wsId: string, id: string, side: Side): string | null {
+    const t = this.layoutOf(wsId);
+    return t ? neighbor(t, id, side) : null;
+  }
+
   equalizeTiles(wsId: string) {
     const t = this.layoutOf(wsId);
     if (!t) return;
@@ -469,6 +483,15 @@ class Store {
     const s = this.widget(wsId, widgetId)?.series.find((x) => x.id === seriesId);
     if (!s) return;
     Object.assign(s, patch);
+    this.emit('widget', { ws: wsId, id: widgetId });
+  }
+
+  /** Show only one series; if it already is the only one shown, show them all again. */
+  soloSeries(wsId: string, widgetId: string, seriesId: string) {
+    const w = this.widget(wsId, widgetId);
+    if (!w) return;
+    const alone = w.series.every((s) => s.visible === (s.id === seriesId));
+    for (const s of w.series) s.visible = alone || s.id === seriesId;
     this.emit('widget', { ws: wsId, id: widgetId });
   }
 

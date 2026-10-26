@@ -24,6 +24,8 @@ import { ChartWidget } from './chartWidget';
 import { openCommandPalette, type Command } from './commandPalette';
 import { Explorer } from './explorer';
 import { modal } from './overlays';
+import { arrangeMenu, swapWithNeighbor } from './arrange';
+import type { Side } from '../layout';
 import { PropertiesPanel } from './properties';
 import { TabBar } from './tabs';
 import { WorksheetView } from './worksheetView';
@@ -205,6 +207,9 @@ export class App {
       { id: 'dup-ws', name: '현재 워크시트 복제', run: () => store.duplicateWorksheet(ws()) },
       { id: 'close-ws', name: '현재 워크시트 닫기', run: () => store.removeWorksheet(ws()) },
       { id: 'add-widget', name: '빈 차트 위젯 추가', run: () => store.addWidget(ws()) },
+      ...arrangeMenu(ws(), store.ws.selectedWidgetId && store.widget(ws(), store.ws.selectedWidgetId) ? store.ws.selectedWidgetId : null)
+        .filter((m) => !m.separator && !m.disabled)
+        .map((m, i) => ({ id: `arrange-${i}`, name: `정렬: ${m.title}`, hotkey: m.hint, run: () => m.onClick?.() })),
       { id: 'all', name: '시간 범위: 전체 보기', hotkey: 'A', run: () => v()?.applyPreset(null) },
       { id: 'back', name: '시간 범위: 뒤로', hotkey: 'Alt+←', run: () => store.back(ws()) },
       { id: 'fwd', name: '시간 범위: 앞으로', hotkey: 'Alt+→', run: () => store.forward(ws()) },
@@ -263,6 +268,8 @@ export class App {
       ['+ / -', '시간축 확대 / 축소'],
       ['A', '전체 보기'],
       ['Alt+← / Alt+→', '줌 기록 뒤로 / 앞으로'],
+      ['Alt+Shift+방향키', '선택 위젯을 그쪽 위젯과 자리 바꾸기'],
+      ['Ctrl+클릭 (범례)', '그 시리즈만 보기 / 다시 모두 보기'],
       ['F', '선택 위젯 최대화'],
       ['Delete', '선택 위젯 삭제'],
       ['Esc', '선택 해제 / 최대화 해제'],
@@ -280,7 +287,7 @@ export class App {
         h('li', {}, '탐색기와 CSV 가져오기 창의 열 검색은 정규식입니다 (예: temp|press, ^tag_00[1-3]). 가져오기 창의 모두 선택/해제는 검색된 열에만 적용됩니다.'),
         h('li', {}, '탐색기에서 열(시리즈)을 차트 가운데로 끌면 그 차트에 추가, 가장자리로 끌면 그쪽에 새 차트 타일이 생깁니다. Ctrl/Shift로 다중 선택.'),
         h('li', {}, '범례 행을 다른 위젯으로 끌면 시리즈가 이동합니다 (Alt/Ctrl 누르면 복사).'),
-        h('li', {}, '위젯은 화면을 나눠 채우는 타일입니다. 헤더를 다른 타일의 가장자리로 끌면 그쪽으로 옮겨 붙고, 가운데로 끌면 자리를 바꿉니다. 탭으로 끌면 다른 워크시트로 옮깁니다. 타일 사이 경계선을 끌어 크기를 조절하고, 더블클릭하면 반반이 됩니다.'),
+        h('li', {}, '위젯은 화면을 나눠 채우는 타일입니다. 헤더를 다른 타일의 가장자리로 끌면 그쪽으로 옮겨 붙고, 가운데로 끌면 자리를 바꿉니다. 탭으로 끌면 다른 워크시트로 옮깁니다. 타일 사이 경계선을 끌어 크기를 조절하고, 더블클릭하면 반반이 됩니다. 툴바의 정렬 메뉴로 위젯 높이·너비를 균등 분배합니다.'),
         h('li', {}, '차트 위 드래그 = 구간 확대, Ctrl+휠 = 시간축 줌 (Ctrl+Shift+휠 = 이동), 그냥 휠 = 워크시트 스크롤, 더블클릭 = 줌 초기화. 연동된 위젯은 시간축을 공유합니다.'),
         h('li', {}, '보이는 구간만 M4 다운샘플링해 그리므로 수천만 포인트도 빠르게 탐색할 수 있습니다. Shift+드래그 또는 가운데 버튼 드래그로 이동합니다.'),
       ),
@@ -333,7 +340,10 @@ export class App {
       if (typing || mod || document.querySelector('.modal-container')) return;
       const v = this.view;
       const sel = store.ws.selectedWidgetId;
-      if (e.altKey && e.key === 'ArrowLeft') store.back(ws);
+      const arrow: Record<string, Side> = { ArrowUp: 'top', ArrowDown: 'bottom', ArrowLeft: 'left', ArrowRight: 'right' };
+      if (e.altKey && e.shiftKey && arrow[e.key]) {
+        if (sel) swapWithNeighbor(ws, sel, arrow[e.key]);
+      } else if (e.altKey && e.key === 'ArrowLeft') store.back(ws);
       else if (e.altKey && e.key === 'ArrowRight') store.forward(ws);
       else if (e.key === 'ArrowLeft') v?.pan(-0.25);
       else if (e.key === 'ArrowRight') v?.pan(0.25);

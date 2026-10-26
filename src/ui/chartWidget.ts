@@ -22,11 +22,13 @@ import {
   Unlink,
   ZoomOut,
   type IconNode,
+  LayoutDashboard,
 } from 'lucide';
 import { store } from '../store';
 import type { ChartType, SeriesRef, TimeRange, WidgetState } from '../types';
 import { dropTarget, draggable, isSeries, seriesPayload, type DragPayload } from './dnd';
 import type { Side } from '../layout';
+import { arrangeMenu } from './arrange';
 import { engine, log, type SeriesKey } from '../engine';
 import { saveBlob } from '../dialogs';
 import { formatTime } from '../data/time';
@@ -607,13 +609,14 @@ export class ChartWidget {
       });
       swatch.addEventListener('click', (e) => {
         e.stopPropagation();
-        store.updateSeries(this.wsId, this.id, s.id, { visible: !s.visible });
+        if (e.ctrlKey || e.metaKey) store.soloSeries(this.wsId, this.id, s.id);
+        else store.updateSeries(this.wsId, this.id, s.id, { visible: !s.visible });
       });
       const val = h('td', { class: 'num cursor-val' }, '—');
       this.valueCells.push(val);
       const row = h(
         'tr',
-        { class: s.visible ? '' : 'is-hidden', title: `${source.name} › ${s.column}` },
+        { class: s.visible ? '' : 'is-hidden', title: `${source.name} › ${s.column}\nCtrl+클릭: 이 시리즈만 보기 (다시 Ctrl+클릭: 모두 보기)` },
         h('td', { class: 'legend-name' }, swatch, h('span', {}, s.label)),
         val,
         ...this.statRow(statCells),
@@ -626,6 +629,10 @@ export class ChartWidget {
       row.addEventListener('mouseenter', () => s.visible && this.u?.setSeries(i + 1, { focus: true }));
       row.addEventListener('mouseleave', () => this.u?.setSeries(null, { focus: false }));
       row.addEventListener('dblclick', () => store.select(this.id));
+      // Ctrl+click: only this series (again: all of them)
+      row.addEventListener('click', (e) => {
+        if (e.ctrlKey || e.metaKey) store.soloSeries(this.wsId, this.id, s.id);
+      });
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -880,6 +887,7 @@ export class ChartWidget {
       { title: '모든 시리즈 보이기', icon: Eye, onClick: () => st.series.forEach((s) => store.updateSeries(this.wsId, this.id, s.id, { visible: true })) },
       { title: '스냅샷 PNG', icon: Camera, onClick: () => void this.snapshot() },
       { title: '보이는 구간 CSV 내보내기', icon: Download, onClick: () => this.exportCsv() },
+      { title: '정렬 (높이·너비 맞추기, 자리 바꾸기)…', icon: LayoutDashboard, onClick: () => setTimeout(() => showMenu(arrangeMenu(this.wsId, this.id), { x: e.clientX, y: e.clientY })) },
       { title: '위젯 복제', icon: Copy, onClick: () => store.duplicateWidget(this.wsId, this.id) },
       { separator: true, title: '' },
       { title: '위젯 삭제', icon: Trash2, danger: true, onClick: () => store.removeWidget(this.wsId, this.id) },

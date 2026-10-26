@@ -613,7 +613,7 @@ label.checkbox-container::after {
   container-type: size;
 }
 /* small tiles give the plot the room: the legend table hides */
-@container (max-height: 260px) {
+@container (max-height: 220px) {
   .widget-legend {
     display: none;
   }

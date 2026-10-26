@@ -25,6 +25,7 @@ import { h, icon, iconButton } from '../util';
 import { ChartWidget } from './chartWidget';
 import { showMenu } from './overlays';
 import { actions } from '../actions';
+import { arrangeMenu } from './arrange';
 
 const PRESETS: { label: string; ms: number | null; hint?: string }[] = [
   { label: '전체 데이터', ms: null, hint: 'A' },
@@ -81,6 +82,12 @@ export class WorksheetView {
       ),
     );
 
+    const arrangeBtn = h('button', { class: 'toolbar-button', type: 'button', title: '정렬 — 위젯 높이·너비 균등 분배, 자리 바꾸기' }, icon(LayoutDashboard, 15), h('span', {}, '정렬'), icon(ChevronDown, 14));
+    arrangeBtn.addEventListener('click', () => {
+      const sel = store.ws.selectedWidgetId;
+      showMenu(arrangeMenu(this.wsId, sel && store.widget(this.wsId, sel) ? sel : null), arrangeBtn);
+    });
+
     const header = h(
       'div',
       { class: 'view-header' },
@@ -105,7 +112,7 @@ export class WorksheetView {
         { class: 'view-actions' },
         this.crossBtn,
         this.dragBtn,
-        iconButton(LayoutDashboard, '타일 크기 균등하게', () => store.equalizeTiles(this.wsId)),
+        arrangeBtn,
         iconButton(Plus, '빈 차트 위젯 추가', () => store.addWidget(this.wsId)),
       ),
     );
