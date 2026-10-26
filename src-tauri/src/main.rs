@@ -35,22 +35,47 @@ fn file_args(argv: impl IntoIterator<Item = String>) -> Vec<String> {
 #[cfg(windows)]
 fn watch_webview(win: &tauri::WebviewWindow, app: tauri::AppHandle, eng: Arc<Engine>) {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
-    use webview2_com::ProcessFailedEventHandler;
-    use windows::core::Interface;
+    use webview2_com::{take_pwstr, ProcessFailedEventHandler};
+    use windows::core::{Interface, PWSTR};
     let _ = win.with_webview(move |wv| unsafe {
         let Ok(core) = wv.controller().CoreWebView2() else { return };
+        // runtime version and where WebView2 writes its crash dumps
+        if let Ok(env) = core.cast::<ICoreWebView2_2>().and_then(|c| c.Environment()) {
+            let mut ver = PWSTR::null();
+            let _ = env.BrowserVersionString(&mut ver);
+            let mut dir = PWSTR::null();
+            let dumps = env.cast::<ICoreWebView2Environment11>().and_then(|e| e.FailureReportFolderPath(&mut dir)).ok().map(|_| take_pwstr(dir));
+            eng.log(&format!("WebView2 {} · crash dumps: {}", take_pwstr(ver), dumps.as_deref().unwrap_or("?")));
+            if let Some(d) = dumps {
+                for line in recent_dumps(std::path::Path::new(&d)) {
+                    eng.log(&line);
+                }
+            }
+        }
         let handler = ProcessFailedEventHandler::create(Box::new(move |sender: Option<ICoreWebView2>, args: Option<ICoreWebView2ProcessFailedEventArgs>| {
             let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
             let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
             let mut code = 0i32;
+            let mut module = String::new();
+            let mut desc = String::new();
             if let Some(a) = &args {
                 let _ = a.ProcessFailedKind(&mut kind);
                 if let Ok(a2) = a.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
                     let _ = a2.Reason(&mut reason);
                     let _ = a2.ExitCode(&mut code);
+                    let mut p = PWSTR::null();
+                    if a2.ProcessDescription(&mut p).is_ok() {
+                        desc = take_pwstr(p);
+                    }
+                }
+                if let Ok(a3) = a.cast::<ICoreWebView2ProcessFailedEventArgs3>() {
+                    let mut p = PWSTR::null();
+                    if a3.FailureSourceModulePath(&mut p).is_ok() {
+                        module = take_pwstr(p);
+                    }
                 }
             }
-            eng.log(&format!("WebView2 process failed: kind={} reason={} exitCode={}", kind.0, reason.0, code));
+            eng.log(&format!("WebView2 process failed: kind={} reason={} exitCode={:#x} module={:?} process={:?}", kind.0, reason.0, code as u32, module, desc));
             if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
                 eng.log("restarting app");
                 app.restart();
@@ -68,6 +93,34 @@ fn watch_webview(win: &tauri::WebviewWindow, app: tauri::AppHandle, eng: Arc<Eng
         let mut token = 0i64;
         let _ = core.add_ProcessFailed(&handler, &mut token);
     });
+}
+
+/// The newest crash dumps WebView2 left behind, for the log.
+#[cfg(windows)]
+fn recent_dumps(dir: &std::path::Path) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dmp")) {
+                if let Ok(m) = e.metadata() {
+                    files.push((m.modified().ok(), m.len(), p));
+                }
+            }
+        }
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files
+        .into_iter()
+        .take(3)
+        .map(|(t, len, p)| {
+            let age = t.and_then(|t| t.elapsed().ok()).map(|d| d.as_secs() / 60).unwrap_or(0);
+            format!("crash dump {} ({} KB, {} min ago)", p.display(), len / 1024, age)
+        })
+        .collect()
 }
 
 fn main() {
