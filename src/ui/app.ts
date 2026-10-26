@@ -230,6 +230,8 @@ export class App {
     store.on('settings', () => show(store.ws.settings.rightTab ?? 'props', false));
     // a new note (or one opened from a chart) shows the list
     store.on('annotating', () => store.focusedAnnotation && show('annotations'));
+    // clicks must reach plugin charts' hosts (not their sandboxed frames) in annotation mode
+    store.on('annotating', () => document.body.classList.toggle('is-annotating', store.annotating));
     counts();
     show(store.ws.settings.rightTab ?? 'props', false);
     return h(
@@ -334,7 +336,7 @@ export class App {
         h('li', {}, '워크스페이스(.chronos)에는 레이아웃과 전처리 결과(파싱된 값 + 인덱스)가 함께 저장되어, 다시 열면 CSV 없이도 바로 보입니다. 브라우저가 원본 CSV 접근을 허용하면(버튼 한 번) 바뀐 CSV는 같은 설정으로 자동 재처리합니다.'),
         h('li', {}, '저장하기 전의 작업은 "Untitled"로 브라우저 저장소에 자동 보관되어, 다음 방문 때 그대로 복원됩니다. .chronos 파일을 창에 끌어다 놓아도 열립니다.'),
         h('li', {}, '차트 플러그인: 리본의 퍼즐 아이콘(또는 워크시트 툴바의 +)에서 산점도·회귀(R²), 히트맵, 히스토그램, 상관행렬을 추가합니다. "플러그인 명세서 복사"로 LLM에게 새 그래프를 만들게 하고, 받은 코드를 붙여넣으면 바로 위젯으로 쓸 수 있습니다.'),
-        h('li', {}, '주석: N(또는 툴바의 주석 버튼)을 누른 뒤 그래프를 클릭하면 그 시점에, 드래그하면 그 구간에 주석이 달립니다. 메모와 그 시점의 데이터, 당시 화면(시간 범위·Y축 확대·보이던 시리즈)이 저장되고, 오른쪽 사이드바의 주석 탭에서 항목을 클릭하면 그 화면으로 돌아갑니다.'),
+        h('li', {}, '주석: N(또는 툴바의 주석 버튼)을 누른 뒤 그래프를 클릭하면 그 시점에, 드래그하면 그 구간에 주석이 달립니다. 메모와 그 시점의 데이터, 당시 화면(시간 범위·Y축 확대·보이던 시리즈)이 저장되고, 오른쪽 사이드바의 주석 탭에서 항목을 클릭하면 그 화면으로 돌아갑니다. 플러그인 차트는 클릭하면 차트 전체에 주석이 달리고(파라미터·썸네일 저장), 제목줄의 말풍선 숫자로 보입니다.'),
         h('li', {}, '탐색기와 CSV 가져오기 창의 열 검색은 정규식입니다 (예: temp|press, ^tag_00[1-3]). 가져오기 창의 모두 선택/해제는 검색된 열에만 적용됩니다.'),
         h('li', {}, '탐색기에서 열(시리즈)을 차트 가운데로 끌면 그 차트에 추가, 가장자리로 끌면 그쪽에 새 차트 타일이 생깁니다. Ctrl/Shift로 다중 선택.'),
         h('li', {}, '범례 행을 다른 위젯으로 끌면 시리즈가 이동합니다 (Alt/Ctrl 누르면 복사).'),

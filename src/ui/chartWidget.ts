@@ -16,6 +16,7 @@ import {
   Maximize2,
   Minimize2,
   Pencil,
+  MessageSquare,
   Settings2,
   Table2,
   Trash2,
@@ -29,12 +30,12 @@ import type { Annotation, AnnotationValue, ChartType, SeriesRef, TimeRange, Widg
 import { dropTarget, draggable, isSeries, seriesPayload, type DragPayload } from './dnd';
 import type { Side } from '../layout';
 import { arrangeMenu } from './arrange';
-import { ANNOTATION_COLORS, noteTitle, whenText } from '../annotations';
+import { ANNOTATION_COLORS, noteTitle, openAnnotation, whenText } from '../annotations';
 import { openAnnotationEditor } from './annotationEditor';
 import type { PluginFrame } from '../plugins/sandbox';
 import { pluginApi } from '../plugins/api';
 import { plugins } from '../plugins/registry';
-import type { PluginRecord } from '../plugins/types';
+import type { ColumnRef, PluginRecord } from '../plugins/types';
 import { assignColumns, resolveParams } from './pluginParams';
 import { openPluginManager } from './pluginManager';
 import { engine, log, type SeriesKey } from '../engine';
@@ -144,6 +145,7 @@ export class ChartWidget {
   private linkBtn: HTMLButtonElement;
   private maxBtn: HTMLButtonElement;
   private badge: HTMLElement;
+  private noteBadge: HTMLButtonElement;
   private empty: HTMLElement;
   private missing: HTMLElement;
   private vline: HTMLElement;
@@ -182,12 +184,18 @@ export class ChartWidget {
     this.linkBtn = iconButton(Link, '타임라인 연동', () => this.toggleLink());
     this.maxBtn = iconButton(Maximize2, '최대화', () => this.toggleMaximize());
     this.badge = h('span', { class: 'widget-badge' });
+    this.noteBadge = h('button', { type: 'button', class: 'widget-note-badge', hidden: true });
+    this.noteBadge.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.notesMenu(e);
+    });
     const header = h(
       'div',
       { class: 'widget-header' },
       this.typeBtn,
       this.titleEl,
       this.badge,
+      this.noteBadge,
       h('div', { class: 'widget-header-spacer' }),
       h(
         'div',
@@ -210,6 +218,11 @@ export class ChartWidget {
     this.missing = h('div', { class: 'widget-missing' });
     this.annoLayer = h('div', { class: 'anno-layer' });
     this.pluginHost = h('div', { class: 'plugin-host', hidden: true });
+    this.pluginHost.addEventListener('click', (e) => {
+      if (!store.annotating || !this.state.plugin) return;
+      store.setAnnotating(false);
+      void this.createChartAnnotation({ x: e.clientX, y: e.clientY });
+    });
     this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.pluginHost, this.annoLayer, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
     this.legend = h('div', { class: 'widget-legend' });
     this.content = h('div', { class: 'widget' }, header, h('div', { class: 'widget-body' }, this.plotWrap, this.legend));
@@ -717,10 +730,70 @@ export class ChartWidget {
     openAnnotationEditor(a, at, true);
   }
 
+  /** A note on the whole plugin chart: range, parameters, column stats and a picture of it. */
+  async createChartAnnotation(at: { x: number; y: number }) {
+    const st = this.state;
+    if (!st.plugin) return;
+    const ws = store.sheet(this.wsId);
+    const range = store.widgetRange(this.wsId, st) ?? { start: NaN, end: NaN };
+    const cols: ColumnRef[] = [];
+    for (const v of Object.values(st.plugin.params))
+      for (const c of [v].flat()) if (c && typeof c === 'object' && 'source' in c && store.column(c.source, c.column)) cols.push(c);
+    let values: AnnotationValue[] = [];
+    try {
+      const stats = cols.length ? await engine.stats(cols.map((c) => ({ source: c.source, column: c.column })), range.start, range.end) : [];
+      values = cols.map((c, i) => ({ label: c.label, sourceId: c.source, column: c.column, min: stats[i]?.min ?? null, max: stats[i]?.max ?? null, mean: stats[i]?.mean ?? null, count: stats[i]?.count ?? 0 }));
+    } catch {
+      /* keep the note without numbers */
+    }
+    const shot = this.frame ? await this.frame.snapshot().then((u) => (u ? thumbnail(u, 480) : null)) : null;
+    const a: Annotation = {
+      id: uid('a'),
+      worksheetId: this.wsId,
+      widgetId: this.id,
+      kind: 'chart',
+      t: range.start,
+      t2: range.end,
+      note: '',
+      color: ANNOTATION_COLORS[store.annotations.length % ANNOTATION_COLORS.length],
+      createdAt: Date.now(),
+      values,
+      view: { range: { ...range }, linked: st.linked, yAxis: { ...st.yAxis }, visible: [], plugin: { id: st.plugin.id, params: structuredClone(st.plugin.params) }, ...(shot ? { snapshot: shot } : {}) },
+      widgetTitle: st.title,
+      sheetName: ws?.name ?? '',
+    };
+    store.addAnnotation(a);
+    store.focusAnnotation(a.id);
+    openAnnotationEditor(a, at, true);
+  }
+
+  /** The chart-wide notes of this widget, from the header badge. */
+  private notesMenu(e: MouseEvent) {
+    const notes = store.annotations.filter((a) => a.widgetId === this.id && a.worksheetId === this.wsId && a.kind === 'chart');
+    if (notes.length === 1) {
+      store.focusAnnotation(notes[0].id);
+      openAnnotationEditor(notes[0], { x: e.clientX, y: e.clientY }, false);
+      return;
+    }
+    showMenu(
+      notes.map((a) => ({ title: `${noteTitle(a)} — ${new Date(a.createdAt).toLocaleDateString()}`, icon: MessageSquare, onClick: () => openAnnotation(a) })),
+      { x: e.clientX, y: e.clientY },
+    );
+  }
+
   /** Pins (moments) and bands (spans) over the plot, positioned from the current scales. */
   private drawAnnotations(u = this.u) {
     const layer = this.annoLayer;
     const mine = store.annotations.filter((a) => a.widgetId === this.id && a.worksheetId === this.wsId);
+    // notes on the whole chart (plugin charts) show as a count in the header
+    const whole = mine.filter((a) => a.kind === 'chart');
+    this.noteBadge.hidden = !whole.length;
+    if (whole.length) {
+      this.noteBadge.replaceChildren(icon(MessageSquare, 13), h('span', {}, String(whole.length)));
+      this.noteBadge.title = `이 차트의 주석 ${whole.length}개 — 클릭해서 보기`;
+      this.noteBadge.classList.toggle('is-focused', whole.some((a) => a.id === store.focusedAnnotation));
+      this.noteBadge.style.setProperty('--c', whole[whole.length - 1].color);
+    }
     if (!u || !mine.length) {
       layer.querySelectorAll('.anno-mark').forEach((m) => m.remove());
       return;
@@ -1108,6 +1181,7 @@ export class ChartWidget {
     const st = this.state;
     const items: MenuItem[] = [
       { title: '이름 변경', icon: Pencil, onClick: () => this.editTitle() },
+      ...(st.plugin ? [{ title: '이 차트에 주석 달기', icon: MessageSquare, onClick: () => void this.createChartAnnotation({ x: e.clientX, y: e.clientY }) }] : []),
       { title: '속성 패널', icon: Settings2, onClick: () => { store.select(this.id); store.updateSettings({ rightOpen: true }); } },
       { separator: true, title: '' },
       ...CHART_TYPES.map((c) => ({ title: c.label, icon: c.icon, checked: st.type === c.type, onClick: () => store.setChartType(this.wsId, this.id, c.type) })),
@@ -1220,4 +1294,24 @@ function hash(s: string): string {
   let x = 2166136261;
   for (let i = 0; i < s.length; i++) x = Math.imul(x ^ s.charCodeAt(i), 16777619);
   return (x >>> 0).toString(36);
+}
+
+/** Scale a picture down to at most `maxW` px wide (JPEG data URL). */
+function thumbnail(url: string, maxW: number): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, maxW / img.width);
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      const g = c.getContext('2d')!;
+      g.fillStyle = cssVar('--background-primary');
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => resolve(url);
+    img.src = url;
+  });
 }

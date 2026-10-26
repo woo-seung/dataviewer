@@ -15,7 +15,7 @@ const fmt = (v: number | null | undefined) => (v === null || v === undefined || 
 
 /** The captured data as a small table (value at a point, or min / max / mean over a range). */
 export function valuesTable(a: Annotation, limit = 8): HTMLElement {
-  const range = a.kind === 'range';
+  const range = a.kind !== 'point';
   const t = h('table', { class: 'anno-values' });
   t.append(h('tr', {}, h('th', {}, '시리즈'), ...(range ? [h('th', {}, '최소'), h('th', {}, '최대'), h('th', {}, '평균')] : [h('th', {}, '값')])));
   const row = (v: AnnotationValue) =>
@@ -59,10 +59,11 @@ export function openAnnotationEditor(a: Annotation, at: { x: number; y: number }
   const el = h(
     'div',
     { class: 'anno-editor', role: 'dialog', 'aria-label': '주석' },
-    h('div', { class: 'anno-editor-head' }, icon(MessageSquare, 14), h('span', {}, a.kind === 'point' ? '포인트 주석' : '구간 주석'), h('span', { class: 'anno-when' }, whenText(a))),
+    h('div', { class: 'anno-editor-head' }, icon(MessageSquare, 14), h('span', {}, a.kind === 'point' ? '포인트 주석' : a.kind === 'chart' ? '차트 주석' : '구간 주석'), h('span', { class: 'anno-when' }, whenText(a))),
     text,
     swatches,
-    valuesTable(a, 6),
+    ...(a.view.snapshot ? [h('img', { class: 'anno-shot', src: a.view.snapshot, alt: '주석을 달 때의 차트' })] : []),
+    ...(a.values.length ? [valuesTable(a, 6)] : []),
     h(
       'div',
       { class: 'anno-editor-actions' },

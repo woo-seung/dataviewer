@@ -1,5 +1,5 @@
 import type { Tile } from './layout';
-import type { PluginRecord, PluginWidget } from './plugins/types';
+import type { ParamValue, PluginRecord, PluginWidget } from './plugins/types';
 import type { TimeFormat } from './data/time';
 
 /** How a CSV was imported, by column name, so it can be re-imported without asking. */
@@ -138,16 +138,16 @@ export interface AnnotationValue {
 }
 
 /**
- * A note pinned to a chart, at one moment (`point`) or over a span (`range`),
- * with the data there and the view it was made in, so opening it brings that
- * screen back.
+ * A note pinned to a chart, at one moment (`point`), over a span (`range`)
+ * or on a whole plugin chart (`chart`), with the data there and the view it
+ * was made in, so opening it brings that screen back.
  */
 export interface Annotation {
   id: string;
   worksheetId: string;
   widgetId: string;
-  kind: 'point' | 'range';
-  /** Point time, or range start (epoch ms). */
+  kind: 'point' | 'range' | 'chart';
+  /** Point time, or range start (epoch ms; for `chart`, the visible range). */
   t: number;
   /** Range end. */
   t2?: number;
@@ -160,7 +160,16 @@ export interface Annotation {
   updatedAt?: number;
   values: AnnotationValue[];
   /** The chart's view when the note was made. */
-  view: { range: TimeRange; linked: boolean; yAxis: YAxisOptions; visible: string[] };
+  view: {
+    range: TimeRange;
+    linked: boolean;
+    yAxis: YAxisOptions;
+    visible: string[];
+    /** Plugin charts: the plugin and its parameters at the time. */
+    plugin?: { id: string; params: Record<string, ParamValue> };
+    /** Plugin charts: a small picture of the chart then (data URL). */
+    snapshot?: string;
+  };
   /** Names at creation time (shown if the widget is deleted later). */
   widgetTitle: string;
   sheetName: string;

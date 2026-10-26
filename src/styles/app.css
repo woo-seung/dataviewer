@@ -2476,3 +2476,46 @@ body.is-dragging .plugin-frame,
 body.is-annotating .plugin-frame {
   pointer-events: none;
 }
+
+/* notes on whole plugin charts */
+.widget-note-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--c, var(--interactive-accent)) 22%, transparent);
+  color: var(--text-normal);
+  box-shadow: none;
+}
+.widget-note-badge[hidden] {
+  display: none;
+}
+.widget-note-badge.is-focused {
+  animation: anno-pulse 1.2s ease-out 2;
+  --c: var(--interactive-accent);
+}
+body.is-annotating .plugin-host {
+  cursor: crosshair;
+}
+body.is-annotating .plugin-host::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px dashed hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.6);
+  border-radius: var(--radius-s);
+  pointer-events: none;
+}
+.anno-shot {
+  width: 100%;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  margin-top: 6px;
+  display: block;
+}
+.anno-kind.is-chart {
+  border-radius: 2px;
+  width: 10px;
+  height: 10px;
+}

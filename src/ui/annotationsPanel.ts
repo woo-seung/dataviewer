@@ -89,7 +89,8 @@ export class AnnotationsPanel {
       ...(open
         ? [
             ...(a.note.includes('\n') ? [h('div', { class: 'anno-item-note' }, a.note.split('\n').slice(1).join('\n').trim())] : []),
-            valuesTable(a, 50),
+            ...(a.view.snapshot ? [h('img', { class: 'anno-shot', src: a.view.snapshot, alt: '주석을 달 때의 차트' })] : []),
+            ...(a.values.length ? [valuesTable(a, 50)] : []),
             h('div', { class: 'anno-item-meta' }, `작성 ${new Date(a.createdAt).toLocaleString()}${a.updatedAt && a.updatedAt - a.createdAt > 60_000 ? ` · 수정 ${new Date(a.updatedAt).toLocaleString()}` : ''}`),
           ]
         : []),

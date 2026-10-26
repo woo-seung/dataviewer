@@ -174,7 +174,7 @@ export class WorksheetView {
       'div',
       { class: 'anno-mode-bar', hidden: true },
       icon(MessageSquarePlus, 15),
-      h('span', {}, '주석 모드 — 그래프를 클릭하면 그 시점에, 드래그하면 그 구간에 주석을 답니다.'),
+      h('span', {}, '주석 모드 — 시계열 그래프는 클릭하면 그 시점, 드래그하면 그 구간에, 플러그인 차트는 클릭하면 차트 전체에 주석을 답니다.'),
       h('button', { type: 'button', onclick: (() => store.setAnnotating(false)) as EventListener }, '취소 (Esc)'),
     );
     const content = h('div', { class: 'view-content' }, this.tilesEl, this.growHandle, this.emptyState);

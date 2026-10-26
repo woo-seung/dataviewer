@@ -10,12 +10,13 @@ import { notice } from './ui/overlays';
 export const ANNOTATION_COLORS = ['#e9973f', '#e93147', '#08b94e', '#086ddd', '#a882ff', '#e0de71'];
 
 export function whenText(a: Annotation): string {
+  if (a.kind === 'chart') return a.t2 === undefined ? '차트 전체' : `차트 전체 · ${formatTime(a.t)} → ${formatTime(a.t2)}`;
   if (a.kind === 'point' || a.t2 === undefined) return formatTime(a.t, a.t % 1000 !== 0);
   return `${formatTime(a.t)} → ${formatTime(a.t2)} (${formatDuration(a.t2 - a.t)})`;
 }
 
 /** First line of the note (for labels). */
-export const noteTitle = (a: Annotation) => a.note.split('\n')[0].trim() || (a.kind === 'point' ? '포인트 주석' : '구간 주석');
+export const noteTitle = (a: Annotation) => a.note.split('\n')[0].trim() || (a.kind === 'point' ? '포인트 주석' : a.kind === 'chart' ? '차트 주석' : '구간 주석');
 
 /** Bring back the screen the annotation was made on: worksheet, x range, y zoom, visible series. */
 export function openAnnotation(a: Annotation) {
@@ -32,6 +33,8 @@ export function openAnnotation(a: Annotation) {
     store.focusAnnotation(a.id);
     return;
   }
+  // plugin chart: its parameters as they were (columns, options)
+  if (a.view.plugin && w.plugin?.id === a.view.plugin.id) w.plugin = { ...w.plugin, params: structuredClone(a.view.plugin.params) };
   const visible = new Set(a.view.visible);
   const known = w.series.some((s) => visible.has(s.id));
   for (const s of w.series) if (known) s.visible = visible.has(s.id);
