@@ -515,38 +515,25 @@ export class ChartWidget {
       (e) => {
         const u = this.u;
         if (!u || !(e.target as HTMLElement).closest('.u-over')) return;
-        // plain wheel scrolls the worksheet; Ctrl (or a trackpad pinch) zooms the time axis
-        if (!e.ctrlKey && !e.metaKey) {
-          if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) this.wheelHint();
-          return;
-        }
+        // plain wheel scrolls the worksheet; Ctrl (or a trackpad pinch) zooms
+        // the time axis; Shift pans it
+        const zoom = e.ctrlKey || e.metaKey;
+        if (!zoom && !e.shiftKey) return;
         e.preventDefault();
-        const r = u.over.getBoundingClientRect();
-        const c = u.posToVal(e.clientX - r.left, 'x');
-        const f = Math.pow(1.0015, Math.max(-300, Math.min(300, e.deltaY * (e.deltaMode === 1 ? 33 : 1))));
         const { start, end } = this.curRange;
-        if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-          const d = (end - start) * (e.deltaX || e.deltaY) * 0.0015;
+        if (!zoom) {
+          // browsers may report Shift+wheel as horizontal scrolling
+          const d = (end - start) * (e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 33 : 1) * 0.0015;
           this.setRange({ start: start + d, end: end + d });
           return;
         }
+        const r = u.over.getBoundingClientRect();
+        const c = u.posToVal(e.clientX - r.left, 'x');
+        const f = Math.pow(1.0015, Math.max(-300, Math.min(300, e.deltaY * (e.deltaMode === 1 ? 33 : 1))));
         this.setRange({ start: c - (c - start) * f, end: c + (end - c) * f });
       },
       { passive: false },
     );
-  }
-
-  private hintTimer: ReturnType<typeof setTimeout> | undefined;
-  /** Briefly tell how to zoom when the wheel only scrolled the page. */
-  private wheelHint() {
-    let el = this.plotWrap.querySelector<HTMLElement>('.wheel-hint');
-    if (!el) {
-      el = h('div', { class: 'wheel-hint' }, 'Ctrl + 스크롤로 시간축 확대/축소');
-      this.plotWrap.append(el);
-    }
-    el.classList.add('is-visible');
-    clearTimeout(this.hintTimer);
-    this.hintTimer = setTimeout(() => el!.classList.remove('is-visible'), 1200);
   }
 
   private startPan(e: MouseEvent) {

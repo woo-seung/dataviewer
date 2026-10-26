@@ -1863,21 +1863,4 @@ body.is-dragging * {
   font-style: italic;
 }
 
-/* "Ctrl + wheel to zoom" hint over a chart */
-.wheel-hint {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
-  color: #fff;
-  font-size: var(--font-ui-medium, 14px);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.2s;
-  z-index: 5;
-}
-.wheel-hint.is-visible {
-  opacity: 1;
-}
+
