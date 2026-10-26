@@ -10,7 +10,7 @@ export interface Picked {
   handle?: FileSystemFileHandle;
 }
 
-type Kind = 'csv' | 'workspace' | 'any';
+type Kind = 'csv' | 'workspace' | 'any' | 'plugin';
 
 interface PickerType {
   description: string;
@@ -20,6 +20,7 @@ interface PickerType {
 const CSV_TYPE: PickerType = { description: 'CSV', accept: { 'text/csv': ['.csv', '.tsv', '.txt'] } };
 const WS_TYPE: PickerType = { description: 'Chronos 워크스페이스', accept: { 'application/octet-stream': ['.chronos'] } };
 const PNG_TYPE: PickerType = { description: 'PNG', accept: { 'image/png': ['.png'] } };
+const JS_TYPE: PickerType = { description: '차트 플러그인', accept: { 'text/javascript': ['.js', '.mjs', '.txt'] } };
 
 type W = typeof window & {
   showOpenFilePicker?: (o?: { id?: string; multiple?: boolean; types?: PickerType[]; excludeAcceptAllOption?: boolean }) => Promise<FileSystemFileHandle[]>;
@@ -36,14 +37,14 @@ const test = () => (window as unknown as { __chronosTest?: TestHooks }).__chrono
 /** Opening and saving through handles (Chrome, Edge). */
 export const fsa = typeof w.showOpenFilePicker === 'function' && typeof w.showSaveFilePicker === 'function';
 
-const typesFor = (kind: Kind) => (kind === 'csv' ? [CSV_TYPE] : kind === 'workspace' ? [WS_TYPE] : [WS_TYPE, CSV_TYPE]);
+const typesFor = (kind: Kind) => (kind === 'plugin' ? [JS_TYPE] : kind === 'csv' ? [CSV_TYPE] : kind === 'workspace' ? [WS_TYPE] : [WS_TYPE, CSV_TYPE]);
 
 export async function pickFiles(kind: Kind, multiple = true): Promise<Picked[]> {
   const t = test()?.open;
   if (t) return ((await t(kind, multiple)) ?? []).map((f) => (f instanceof File ? { file: f } : f));
   if (fsa) {
     try {
-      const hs = await w.showOpenFilePicker!({ id: kind === 'workspace' ? 'chronos-ws' : 'chronos-csv', multiple, types: typesFor(kind) });
+      const hs = await w.showOpenFilePicker!({ id: kind === 'workspace' ? 'chronos-ws' : kind === 'plugin' ? 'chronos-plugin' : 'chronos-csv', multiple, types: typesFor(kind) });
       return Promise.all(hs.map(async (handle) => ({ handle, file: await handle.getFile() })));
     } catch (e) {
       if ((e as Error).name === 'AbortError') return [];
@@ -54,7 +55,7 @@ export async function pickFiles(kind: Kind, multiple = true): Promise<Picked[]> 
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = multiple;
-    input.accept = kind === 'csv' ? '.csv,.tsv,.txt' : kind === 'workspace' ? '.chronos' : '.chronos,.csv,.tsv,.txt';
+    input.accept = kind === 'plugin' ? '.js,.mjs,.txt' : kind === 'csv' ? '.csv,.tsv,.txt' : kind === 'workspace' ? '.chronos' : '.chronos,.csv,.tsv,.txt';
     input.addEventListener('change', () => resolve([...(input.files ?? [])].map((file) => ({ file }))));
     input.addEventListener('cancel', () => resolve([]));
     input.click();

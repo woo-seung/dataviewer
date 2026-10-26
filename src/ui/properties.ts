@@ -6,6 +6,10 @@ import { formatDuration, formatTime } from '../data/time';
 import { formatCount, h, icon, iconButton } from '../util';
 import { CHART_TYPES } from './chartWidget';
 import type { WorksheetView } from './worksheetView';
+import { plugins } from '../plugins/registry';
+import { paramControls } from './pluginParams';
+import { openPluginManager } from './pluginManager';
+import { button } from './overlays';
 
 export function toggle(on: boolean, onChange: (v: boolean) => void, label = ''): HTMLElement {
   const t = h('div', { class: `checkbox-container ${on ? 'is-enabled' : ''}`, role: 'switch', tabindex: 0, 'aria-checked': String(on), 'aria-label': label });
@@ -70,12 +74,30 @@ export class PropertiesPanel {
     }
   }
 
+  private rendering = false;
+  private again = false;
+
   private render() {
-    const sel = store.ws.selectedWidgetId;
-    const found = sel ? store.findWidget(sel) : null;
-    this.body.replaceChildren();
-    if (found) this.renderWidget(found.ws.id, found.w);
-    else this.renderSheet();
+    // clearing the panel blurs a focused input, whose change handler can ask
+    // for another render while this one runs: run that one afterwards
+    if (this.rendering) {
+      this.again = true;
+      return;
+    }
+    this.rendering = true;
+    try {
+      const sel = store.ws.selectedWidgetId;
+      const found = sel ? store.findWidget(sel) : null;
+      this.body.replaceChildren();
+      if (found) this.renderWidget(found.ws.id, found.w);
+      else this.renderSheet();
+    } finally {
+      this.rendering = false;
+    }
+    if (this.again) {
+      this.again = false;
+      setTimeout(() => this.render());
+    }
   }
 
   private section(title: string, ...children: (HTMLElement | null)[]) {
@@ -117,7 +139,51 @@ export class PropertiesPanel {
     this.body.append(h('div', { class: 'prop-hint' }, '위젯을 클릭하면 해당 위젯의 속성이 여기에 표시됩니다.'));
   }
 
+  /** A plugin chart: its parameters as a form generated from the plugin's definition. */
+  private renderPluginWidget(wsId: string, w: WidgetState) {
+    const spec = w.plugin!;
+    const view = this.getView();
+    this.body.append(
+      h(
+        'div',
+        { class: 'prop-header' },
+        h('div', { class: 'prop-header-title' }, w.title),
+        iconButton(Camera, '스냅샷', () => void view?.widget(w.id)?.snapshot()),
+        iconButton(Copy, '복제', () => store.duplicateWidget(wsId, w.id)),
+        iconButton(Trash2, '삭제', () => store.removeWidget(wsId, w.id)),
+        iconButton(X, '선택 해제', () => store.select(null)),
+      ),
+    );
+    const params = h('div', {}, h('div', { class: 'muted' }, '플러그인을 읽는 중…'));
+    const info = h('div', { class: 'setting-item-description plugin-prop-info' });
+    this.section(
+      '위젯',
+      row('제목', textInput(w.title, (v) => v.trim() && store.updateWidget(wsId, w.id, { title: v.trim() }))),
+      row('타임라인 연동', toggle(w.linked, (v) => {
+        this.mut(() => store.updateWidget(wsId, w.id, v ? { linked: true } : { linked: false, range: store.sheetRange(wsId) }));
+        store.emit('range', wsId);
+      }, '타임라인 연동'), '보이는 시간 범위의 데이터로 그립니다'),
+    );
+    this.section('플러그인', info, params);
+    void plugins.get(spec.id).then((p) => {
+      if (!p) {
+        info.textContent = `"${spec.id}" 플러그인이 없습니다.`;
+        params.replaceChildren(button('플러그인 관리', () => void openPluginManager()));
+        return;
+      }
+      info.textContent = `${p.name} · ${p.id} v${p.version}${p.description ? ` — ${p.description}` : ''}`;
+      params.replaceChildren(
+        ...paramControls(p, spec.params, (patch) => {
+          this.mut(() => store.setPluginParams(wsId, w.id, patch));
+          this.render();
+        }),
+        h('div', { class: 'muted plugin-prop-hint' }, '탐색기에서 열을 이 차트 가운데로 끌어 놓아도 열 파라미터가 채워집니다.'),
+      );
+    });
+  }
+
   private renderWidget(wsId: string, w: WidgetState) {
+    if (w.plugin) return this.renderPluginWidget(wsId, w);
     const upd = (patch: Partial<WidgetState>) => this.mut(() => store.updateWidget(wsId, w.id, patch));
     const updY = (patch: Partial<YAxisOptions>) => {
       upd({ yAxis: { ...w.yAxis, ...patch } });

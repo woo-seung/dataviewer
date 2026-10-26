@@ -31,6 +31,12 @@ import type { Side } from '../layout';
 import { arrangeMenu } from './arrange';
 import { ANNOTATION_COLORS, noteTitle, whenText } from '../annotations';
 import { openAnnotationEditor } from './annotationEditor';
+import type { PluginFrame } from '../plugins/sandbox';
+import { pluginApi } from '../plugins/api';
+import { plugins } from '../plugins/registry';
+import type { PluginRecord } from '../plugins/types';
+import { assignColumns, resolveParams } from './pluginParams';
+import { openPluginManager } from './pluginManager';
 import { engine, log, type SeriesKey } from '../engine';
 import { saveBlob } from '../dialogs';
 import { formatTime } from '../data/time';
@@ -151,6 +157,11 @@ export class ChartWidget {
   private ro: ResizeObserver;
   private dropZone: HTMLElement;
   private annoLayer: HTMLElement;
+  private pluginHost: HTMLElement;
+  private frame: PluginFrame | null = null;
+  private frameKey = '';
+  /** The plugin this chart last drew with (for drops onto it). */
+  private pluginRec: PluginRecord | null = null;
   private maxParent: { parent: HTMLElement; next: Node | null } | null = null;
   private renderedRange: TimeRange | null = null;
   private pan: { x: number; range: TimeRange } | null = null;
@@ -183,7 +194,7 @@ export class ChartWidget {
         { class: 'widget-actions' },
         iconButton(ZoomOut, '줌 초기화 (더블클릭)', () => this.resetZoom()),
         this.linkBtn,
-        iconButton(Table2, '범례 테이블', () => store.updateWidget(this.wsId, this.id, { showLegend: !this.state.showLegend })),
+        iconButton(Table2, '범례 테이블', () => store.updateWidget(this.wsId, this.id, { showLegend: !this.state.showLegend }), 'clickable-icon ts-only'),
         iconButton(Camera, '스냅샷 PNG', () => void this.snapshot()),
         this.maxBtn,
         iconButton(Ellipsis, '더 보기', (e) => this.moreMenu(e)),
@@ -198,7 +209,8 @@ export class ChartWidget {
     this.empty = h('div', { class: 'widget-empty' }, icon(ChartLine, 28), h('div', {}, '사이드바에서 시리즈를 여기로 드래그하세요'));
     this.missing = h('div', { class: 'widget-missing' });
     this.annoLayer = h('div', { class: 'anno-layer' });
-    this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.annoLayer, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
+    this.pluginHost = h('div', { class: 'plugin-host', hidden: true });
+    this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.pluginHost, this.annoLayer, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
     this.legend = h('div', { class: 'widget-legend' });
     this.content = h('div', { class: 'widget' }, header, h('div', { class: 'widget-body' }, this.plotWrap, this.legend));
     this.dropZone = h('div', { class: 'tile-drop-zone' });
@@ -244,6 +256,7 @@ export class ChartWidget {
     this.ro.disconnect();
     this.u?.destroy();
     this.u = null;
+    this.frame?.destroy();
     this.el.remove();
   }
 
@@ -268,6 +281,15 @@ export class ChartWidget {
     this.linkBtn.classList.toggle('is-active', st.linked);
     this.linkBtn.title = st.linked ? '타임라인 연동됨 (클릭하여 해제)' : '독립 타임라인 (클릭하여 연동)';
     this.badge.textContent = st.linked ? '' : '독립';
+    this.content.classList.toggle('is-plugin', !!st.plugin);
+    if (st.plugin) return this.renderPlugin(st);
+    if (this.frame) {
+      this.frame.destroy();
+      this.frame = null;
+      this.frameKey = '';
+      this.pluginHost.hidden = true;
+      this.plotHost.hidden = false;
+    }
     this.legend.hidden = !st.showLegend;
 
     const series = this.loadedSeries(st);
@@ -548,6 +570,55 @@ export class ChartWidget {
       },
       { passive: false },
     );
+  }
+
+  // ---------------- plugin charts ----------------
+  /** Draw with a chart plugin in its sandbox (see plugins/). */
+  private async renderPlugin(st: WidgetState) {
+    const spec = st.plugin!;
+    this.legend.hidden = true;
+    this.empty.hidden = true;
+    this.missing.hidden = true;
+    this.plotHost.hidden = true;
+    this.pluginHost.hidden = false;
+    if (this.u) {
+      this.u.destroy();
+      this.u = null;
+      this.structKey = '';
+    }
+    const rec = await plugins.get(spec.id);
+    if (this.state?.plugin?.id !== spec.id) return;
+    this.pluginRec = rec ?? null;
+    if (!rec) {
+      this.frame?.destroy();
+      this.frame = null;
+      this.frameKey = '';
+      this.pluginHost.replaceChildren(
+        h(
+          'div',
+          { class: 'plugin-missing' },
+          h('div', {}, `플러그인 "${spec.id}" 을(를) 찾을 수 없습니다.`),
+          h('button', { type: 'button', onclick: (() => void openPluginManager()) as EventListener }, '플러그인 관리'),
+        ),
+      );
+      return;
+    }
+    const key = `${rec.id}@${rec.version}#${rec.code.length}:${hash(rec.code)}`;
+    if (!this.frame || this.frameKey !== key) {
+      const { PluginFrame } = await import('../plugins/sandbox');
+      if (this.state?.plugin?.id !== spec.id) return;
+      this.frame?.destroy();
+      this.frame = new PluginFrame(rec.code, pluginApi(this.wsId, this.id, () => this.pluginHost.clientWidth));
+      this.frame.onSetRange = (a, b) => this.setRange({ start: a, end: b });
+      this.frame.onError = (m) => log(`plugin ${rec.id}: ${m}`);
+      this.pluginHost.replaceChildren(this.frame.iframe);
+      this.frameKey = key;
+    }
+    const w = this.pluginHost.clientWidth;
+    const hgt = this.pluginHost.clientHeight;
+    if (w < 10 || hgt < 10) return;
+    void this.frame.render({ params: resolveParams(rec, spec.params), width: w, height: hgt, range: store.widgetRange(this.wsId, st) });
+    this.drawAnnotations();
   }
 
   // ---------------- annotations ----------------
@@ -922,6 +993,15 @@ export class ChartWidget {
         }
         if (!isSeries(p)) return;
         const copy = e.altKey || e.ctrlKey;
+        if (zone === 'center' && this.state.plugin) {
+          const rec = this.pluginRec;
+          const refs = p.data.items.map((it) => ({ source: it.sourceId, column: it.column, label: it.column }));
+          const patch = rec ? assignColumns(rec, this.state.plugin.params, refs) : null;
+          if (patch) store.setPluginParams(this.wsId, this.id, patch);
+          else notice('이 플러그인에는 열 파라미터가 없습니다.', 3000);
+          store.select(this.id);
+          return;
+        }
         if (zone === 'center') {
           if (p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, this.id, copy);
           else store.addSeries(this.wsId, this.id, p.data.items);
@@ -1072,6 +1152,13 @@ export class ChartWidget {
 
   /** PNG of the chart canvas with a title and legend row, at device resolution. */
   async snapshot() {
+    if (this.state.plugin && this.frame) {
+      const url = await this.frame.snapshot();
+      if (!url) return notice('스냅샷을 만들지 못했습니다.', 4000, 'error');
+      const name = `${this.state.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`;
+      if (await saveBlob(await (await fetch(url)).blob(), 'png', name)) notice(`스냅샷 저장: ${name}`);
+      return;
+    }
     const u = this.u;
     if (!u) return;
     const st = this.state;
@@ -1114,6 +1201,7 @@ export class ChartWidget {
   /** Export the visible window (raw samples, all series on a union time axis). */
   async exportCsv() {
     const st = this.state;
+    if (st.plugin) return notice('플러그인 차트는 CSV 내보내기를 지원하지 않습니다.', 4000);
     const range = this.renderedRange ?? store.widgetRange(this.wsId, st);
     if (!range) return;
     const series = this.loadedSeries(st);
@@ -1125,4 +1213,11 @@ export class ChartWidget {
       notice(`내보내기 실패: ${(e as Error).message}`, 6000, 'error');
     }
   }
+}
+
+/** Short content hash (to notice a plugin's code changing). */
+function hash(s: string): string {
+  let x = 2166136261;
+  for (let i = 0; i < s.length; i++) x = Math.imul(x ^ s.charCodeAt(i), 16777619);
+  return (x >>> 0).toString(36);
 }

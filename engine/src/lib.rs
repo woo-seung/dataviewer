@@ -5,6 +5,7 @@
 //! All operations go through [`Engine::call`] (command name + JSON args), which
 //! the Tauri app and the HTTP test bridge expose identically.
 
+pub mod analysis;
 pub mod chronos;
 pub mod csv;
 pub mod diag;
@@ -94,7 +95,7 @@ impl Source {
     pub fn byte_len(&self) -> u64 {
         (self.time.len() * 8) as u64 + self.columns.iter().map(|c| c.values.byte_len() as u64 + (c.blocks.min.len() * 36) as u64).sum::<u64>()
     }
-    fn column(&self, name: &str) -> Option<&Column> {
+    pub fn column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|c| c.name == name)
     }
 }
@@ -418,6 +419,64 @@ impl Engine {
         Ok(stamps.len())
     }
 
+    /// Aggregations for plugin charts (see analysis.rs).
+    fn analysis(&self, cmd: &str, args: &Value) -> Result<Reply, Error> {
+        use analysis::Col;
+        let f = |k: &str| args.get(k).and_then(Value::as_f64).unwrap_or(f64::NAN);
+        let n = |k: &str, d: u64| args.get(k).and_then(Value::as_u64).unwrap_or(d) as usize;
+        let (start, end) = (f("start"), f("end"));
+        let refs: Vec<SeriesRef> = match cmd {
+            "regress" | "hist2d" => vec![serde_json::from_value(args.get("x").cloned().unwrap_or_default())?, serde_json::from_value(args.get("y").cloned().unwrap_or_default())?],
+            _ => {
+                let v = args.get("series").cloned().unwrap_or(json!([]));
+                if v.is_array() { serde_json::from_value(v)? } else { vec![serde_json::from_value(v)?] }
+            }
+        };
+        let srcs: Vec<Arc<Source>> = refs.iter().map(|r| self.get(&r.source)).collect::<Result<_, _>>()?;
+        let cols: Vec<Col> = refs
+            .iter()
+            .zip(&srcs)
+            .map(|(r, s)| s.column(&r.column).map(|c| Col { time: &s.time, values: &c.values }).ok_or_else(|| Error::msg(format!("열 '{}' 을(를) 찾을 수 없습니다.", r.column))))
+            .collect::<Result<_, _>>()?;
+        if cols.is_empty() {
+            return Err(Error::msg("시리즈를 지정하세요."));
+        }
+        let floats = |head: Vec<f64>, parts: Vec<&[f64]>| {
+            let mut out: Vec<u8> = bytemuck::cast_slice(&head).to_vec();
+            for p in parts {
+                out.extend_from_slice(bytemuck::cast_slice(p));
+            }
+            Reply::Bytes(out)
+        };
+        Ok(match cmd {
+            "aligned" => {
+                let (total, t, vals) = analysis::aligned(&cols, start, end, n("maxRows", 100_000).min(5_000_000));
+                let mut parts: Vec<&[f64]> = vec![&t];
+                parts.extend(vals.iter().map(|v| v.as_slice()));
+                floats(vec![total as f64, t.len() as f64, vals.len() as f64], parts)
+            }
+            "raw" => {
+                let (total, t, v) = analysis::raw(&cols[0], start, end, n("limit", 100_000).min(5_000_000));
+                floats(vec![total as f64, t.len() as f64], vec![&t, &v])
+            }
+            "regress" => Reply::Json(serde_json::to_value(analysis::regress(&cols[0], &cols[1], start, end))?),
+            "hist" => {
+                let range = match (args.get("min").and_then(Value::as_f64), args.get("max").and_then(Value::as_f64)) {
+                    (Some(a), Some(b)) if b > a => Some((a, b)),
+                    _ => None,
+                };
+                Reply::Json(serde_json::to_value(analysis::hist(&cols[0], start, end, n("bins", 50), range))?)
+            }
+            "hist2d" => Reply::Json(serde_json::to_value(analysis::hist2d(&cols[0], &cols[1], start, end, n("xBins", 50).min(500), n("yBins", 50).min(500)))?),
+            _ => {
+                let keys: Vec<String> = serde_json::from_value(args.get("keys").cloned().unwrap_or(json!(["hour"])))?;
+                let k = |i: usize| keys.get(i).map(|s| analysis::Key::parse(s).ok_or_else(|| Error::msg(format!("알 수 없는 키: {s}")))).transpose();
+                let k1 = k(0)?.ok_or_else(|| Error::msg("keys가 필요합니다."))?;
+                Reply::Json(serde_json::to_value(analysis::buckets(&cols[0], start, end, k1, k(1)?))?)
+            }
+        })
+    }
+
     /// Dispatch one command. `emit` receives progress events.
     pub fn call(&self, cmd: &str, args: Value, emit: Emit) -> Result<Reply, Error> {
         let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
@@ -508,6 +567,7 @@ impl Engine {
                     .collect();
                 Reply::Json(json!(out))
             }
+            "aligned" | "raw" | "regress" | "hist" | "hist2d" | "buckets" => return self.analysis(cmd, &args),
             "times" => {
                 // timestamp of the sample nearest to t, per series (annotations snap to it)
                 let t = f("t");

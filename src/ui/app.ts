@@ -13,6 +13,7 @@ import {
   Files,
   LayoutDashboard,
   MessageSquare,
+  Puzzle,
 } from 'lucide';
 import { store } from '../store';
 import { actions } from '../actions';
@@ -24,11 +25,13 @@ import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
 import { ChartWidget } from './chartWidget';
 import { openCommandPalette, type Command } from './commandPalette';
 import { Explorer } from './explorer';
-import { modal } from './overlays';
+import { modal, notice } from './overlays';
 import { arrangeMenu, swapWithNeighbor } from './arrange';
 import type { Side } from '../layout';
 import { PropertiesPanel } from './properties';
 import { AnnotationsPanel } from './annotationsPanel';
+import { openPluginManager } from './pluginManager';
+import { pluginSpec } from '../plugins/spec';
 import { TabBar } from './tabs';
 import { WorksheetView } from './worksheetView';
 
@@ -67,6 +70,7 @@ export class App {
         ribbonBtn(Sparkles, '샘플 데이터', () => void actions.loadSample()),
         ribbonBtn(FilePlus, '새 워크시트 (Alt+T)', () => store.addWorksheet()),
         ribbonBtn(CommandIcon, '명령 팔레트 (Ctrl+P)', () => this.palette()),
+        ribbonBtn(Puzzle, '차트 플러그인', () => void openPluginManager()),
         ribbonBtn(LayoutDashboard, '워크스페이스 열기 (Ctrl+O)', () => void actions.openWorkspace()),
         ribbonBtn(Save, '워크스페이스 저장 (Ctrl+S)', () => void actions.saveWorkspace()),
       ),
@@ -248,6 +252,8 @@ export class App {
       { id: 'dup-ws', name: '현재 워크시트 복제', run: () => store.duplicateWorksheet(ws()) },
       { id: 'close-ws', name: '현재 워크시트 닫기', run: () => store.removeWorksheet(ws()) },
       { id: 'add-widget', name: '빈 차트 위젯 추가', run: () => store.addWidget(ws()) },
+      { id: 'plugins', name: '차트 플러그인 관리 (불러오기·위젯 추가)', run: () => void openPluginManager() },
+      { id: 'plugin-spec', name: '플러그인 명세서 복사 (LLM에게 플러그인 만들기 맡기기)', run: () => void navigator.clipboard.writeText(pluginSpec()).then(() => notice('플러그인 명세서를 복사했습니다.'), () => void openPluginManager()) },
       { id: 'annotate', name: '주석 달기 (그래프 클릭 = 포인트, 드래그 = 구간)', hotkey: 'N', run: () => store.setAnnotating(true) },
       ...arrangeMenu(ws(), store.ws.selectedWidgetId && store.widget(ws(), store.ws.selectedWidgetId) ? store.ws.selectedWidgetId : null)
         .filter((m) => !m.separator && !m.disabled)
@@ -327,6 +333,7 @@ export class App {
         h('li', {}, 'CSV를 창에 끌어다 놓거나 CSV 열기(Ctrl+Shift+O)로 불러옵니다. 시간 열·형식·구분자는 자동 감지되며 파일 크기 제한이 없습니다.'),
         h('li', {}, '워크스페이스(.chronos)에는 레이아웃과 전처리 결과(파싱된 값 + 인덱스)가 함께 저장되어, 다시 열면 CSV 없이도 바로 보입니다. 브라우저가 원본 CSV 접근을 허용하면(버튼 한 번) 바뀐 CSV는 같은 설정으로 자동 재처리합니다.'),
         h('li', {}, '저장하기 전의 작업은 "Untitled"로 브라우저 저장소에 자동 보관되어, 다음 방문 때 그대로 복원됩니다. .chronos 파일을 창에 끌어다 놓아도 열립니다.'),
+        h('li', {}, '차트 플러그인: 리본의 퍼즐 아이콘(또는 워크시트 툴바의 +)에서 산점도·회귀(R²), 히트맵, 히스토그램, 상관행렬을 추가합니다. "플러그인 명세서 복사"로 LLM에게 새 그래프를 만들게 하고, 받은 코드를 붙여넣으면 바로 위젯으로 쓸 수 있습니다.'),
         h('li', {}, '주석: N(또는 툴바의 주석 버튼)을 누른 뒤 그래프를 클릭하면 그 시점에, 드래그하면 그 구간에 주석이 달립니다. 메모와 그 시점의 데이터, 당시 화면(시간 범위·Y축 확대·보이던 시리즈)이 저장되고, 오른쪽 사이드바의 주석 탭에서 항목을 클릭하면 그 화면으로 돌아갑니다.'),
         h('li', {}, '탐색기와 CSV 가져오기 창의 열 검색은 정규식입니다 (예: temp|press, ^tag_00[1-3]). 가져오기 창의 모두 선택/해제는 검색된 열에만 적용됩니다.'),
         h('li', {}, '탐색기에서 열(시리즈)을 차트 가운데로 끌면 그 차트에 추가, 가장자리로 끌면 그쪽에 새 차트 타일이 생깁니다. Ctrl/Shift로 다중 선택.'),

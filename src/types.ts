@@ -1,4 +1,5 @@
 import type { Tile } from './layout';
+import type { PluginRecord, PluginWidget } from './plugins/types';
 import type { TimeFormat } from './data/time';
 
 /** How a CSV was imported, by column name, so it can be re-imported without asking. */
@@ -78,6 +79,8 @@ export interface WidgetState {
   title: string;
   type: ChartType;
   series: SeriesRef[];
+  /** A plugin chart instead of a time-series chart. */
+  plugin?: PluginWidget;
   /** Former free-grid placement; only read to tile older workspaces. */
   x: number;
   y: number;
@@ -180,6 +183,8 @@ export interface Workspace {
   worksheets: Worksheet[];
   sourceMeta?: SourceMeta[];
   annotations?: Annotation[];
+  /** Copies of the user plugins this workspace's widgets use. */
+  plugins?: PluginRecord[];
   activeId: string;
   selectedWidgetId: string | null;
   settings: Settings;

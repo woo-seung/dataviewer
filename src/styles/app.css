@@ -2273,3 +2273,206 @@ body.is-dragging * {
 .workspace-leaf-content > [hidden] {
   display: none !important;
 }
+
+/* ============ Chart plugins ============ */
+.plugin-host {
+  position: absolute;
+  inset: 0;
+}
+.plugin-host[hidden] {
+  display: none;
+}
+.plugin-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color-scheme: normal;
+}
+.widget.is-plugin .ts-only,
+.widget.is-plugin .widget-type {
+  display: none;
+}
+.plugin-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.plugin-howto {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-m);
+  background: var(--background-primary-alt);
+  margin-bottom: 10px;
+}
+.plugin-step {
+  display: flex;
+  gap: 8px;
+  font-size: var(--font-ui-small);
+  align-items: baseline;
+}
+.plugin-step b {
+  flex: 0 0 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #fff);
+  font-size: 11px;
+}
+.plugin-howto-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.plugin-howto-actions button,
+.plugin-install button {
+  gap: 6px;
+}
+.plugin-code {
+  width: 100%;
+  min-height: 140px;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+.plugin-install {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 6px 0 14px;
+}
+.plugin-list-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plugin-row {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--background-modifier-border);
+}
+.plugin-icon {
+  color: var(--text-accent);
+  padding-top: 2px;
+}
+.plugin-info {
+  flex: 1;
+  min-width: 0;
+}
+.plugin-name {
+  font-weight: 600;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.plugin-badge,
+.plugin-used {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--background-modifier-active-hover);
+  color: var(--text-accent);
+}
+.plugin-used {
+  color: var(--text-muted);
+  background: var(--background-modifier-border);
+}
+.plugin-meta {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.plugin-desc,
+.plugin-params {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.plugin-params {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.plugin-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+}
+.plugin-act {
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+  padding: 3px 8px;
+  justify-content: flex-start;
+}
+.plugin-note {
+  font-size: var(--font-ui-smaller);
+  margin-top: 12px;
+}
+.param-column-input {
+  width: 100%;
+  min-width: 140px;
+}
+.param-column-input.is-invalid {
+  border-color: var(--text-error);
+}
+.param-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+  min-width: 150px;
+}
+.param-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.param-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px 1px 8px;
+  border-radius: 10px;
+  background: var(--background-modifier-hover);
+  font-size: 11px;
+}
+.setting-item.param-columns,
+.setting-item.param-column {
+  flex-wrap: wrap;
+}
+.plugin-prop-info {
+  margin-bottom: 6px;
+}
+.plugin-prop-hint {
+  font-size: 11px;
+  margin-top: 8px;
+}
+/* pointer events over an iframe never reach the app: let drags pass through plugin charts */
+body.is-dragging .plugin-frame,
+body.is-annotating .plugin-frame {
+  pointer-events: none;
+}

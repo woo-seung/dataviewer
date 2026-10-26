@@ -12,6 +12,7 @@ import type {
 } from './types';
 import { debounce, uid } from './util';
 import { nextSlot, slotColor } from './palette';
+import type { ParamValue } from './plugins/types';
 import { appendRow, distribute, distributeAround, equalize, fromGrid, tileRects, neighbor, insertAt, insertAuto, reconcile, remove, renameLeaves, setSizes, swap, type Side, type Tile } from './layout';
 
 type Events = {
@@ -28,6 +29,8 @@ type Events = {
   project: void;
   /** annotation list changed */
   annotations: void;
+  /** plugin library / workspace plugin copies changed */
+  plugins: void;
   /** annotation mode switched, or an annotation was focused (transient UI state) */
   annotating: void;
 };
@@ -567,6 +570,18 @@ class Store {
     this.emit('widget', { ws: wsId, id: widgetId });
   }
 
+  /** A widget that draws with a chart plugin instead of the time-series chart. */
+  addPluginWidget(wsId: string, plugin: { id: string; name: string }, params: Record<string, ParamValue> = {}, place?: { target: string; side: Side }) {
+    return this.addWidget(wsId, { title: plugin.name, plugin: { id: plugin.id, params } }, [], place);
+  }
+
+  setPluginParams(wsId: string, widgetId: string, patch: Record<string, ParamValue>) {
+    const w = this.widget(wsId, widgetId);
+    if (!w?.plugin) return;
+    w.plugin = { ...w.plugin, params: { ...w.plugin.params, ...patch } };
+    this.emit('widget', { ws: wsId, id: widgetId });
+  }
+
   /** Show only one series; if it already is the only one shown, show them all again. */
   soloSeries(wsId: string, widgetId: string, seriesId: string) {
     const w = this.widget(wsId, widgetId);
@@ -610,7 +625,16 @@ class Store {
 
   // ---------- time ranges ----------
   /** Full extent covered by a set of series. */
-  extentOf(series: SeriesRef[]): TimeRange | null {
+  /** Sources a widget draws from: its series, or the columns chosen for its plugin. */
+  sourcesOf(w: WidgetState): { sourceId: string }[] {
+    const out = w.series.map((s) => ({ sourceId: s.sourceId }));
+    if (w.plugin)
+      for (const v of Object.values(w.plugin.params))
+        for (const c of [v].flat()) if (c && typeof c === 'object' && typeof (c as { source?: unknown }).source === 'string') out.push({ sourceId: (c as { source: string }).source });
+    return out;
+  }
+
+  extentOf(series: { sourceId: string }[]): TimeRange | null {
     let start = Infinity;
     let end = -Infinity;
     const seen = new Set<string>();
@@ -630,7 +654,7 @@ class Store {
   sheetExtent(wsId: string): TimeRange | null {
     const ws = this.sheet(wsId);
     if (!ws) return null;
-    return this.extentOf(ws.widgets.filter((w) => w.linked).flatMap((w) => w.series));
+    return this.extentOf(ws.widgets.filter((w) => w.linked).flatMap((w) => this.sourcesOf(w)));
   }
 
   sheetRange(wsId: string): TimeRange | null {
@@ -640,7 +664,7 @@ class Store {
 
   widgetRange(wsId: string, w: WidgetState): TimeRange | null {
     if (w.linked) return this.sheetRange(wsId);
-    return w.range ?? this.extentOf(w.series);
+    return w.range ?? this.extentOf(this.sourcesOf(w));
   }
 
   private hist(wsId: string): History {

@@ -9,6 +9,8 @@ import {
   FolderOpen,
   Hand,
   LayoutDashboard,
+  ChartLine,
+  Puzzle,
   MessageSquarePlus,
   Maximize,
   Plus,
@@ -28,6 +30,8 @@ import { ChartWidget } from './chartWidget';
 import { showMenu } from './overlays';
 import { actions } from '../actions';
 import { arrangeMenu } from './arrange';
+import { plugins } from '../plugins/registry';
+import { addPluginWidget, openPluginManager } from './pluginManager';
 
 /** Toolbar buttons that also have keys; hidden when the worksheet is narrow. */
 const optional = <T extends HTMLElement>(el: T) => (el.classList.add('hdr-optional'), el);
@@ -93,6 +97,21 @@ export class WorksheetView {
     );
 
     this.annoBtn = iconButton(MessageSquarePlus, '주석 달기 (N) — 그래프를 클릭하면 포인트, 드래그하면 구간', () => store.setAnnotating(!store.annotating));
+    // "+": a time-series chart or any installed chart plugin
+    const addBtn = iconButton(Plus, '위젯 추가 (시계열 차트 / 플러그인 차트)', () => {
+      void plugins.list().then((list) =>
+        showMenu(
+          [
+            { title: '시계열 차트', icon: ChartLine, onClick: () => store.addWidget(this.wsId) },
+            { separator: true, title: '' },
+            ...list.map((p) => ({ title: p.name, icon: Puzzle, onClick: () => addPluginWidget(p) })),
+            { separator: true, title: '' },
+            { title: '플러그인 관리 · 새 플러그인 만들기…', icon: Puzzle, onClick: () => void openPluginManager() },
+          ],
+          addBtn,
+        ),
+      );
+    });
     const arrangeBtn = h('button', { class: 'toolbar-button', type: 'button', title: '정렬 — 위젯 높이·너비 균등 분배, 자리 바꾸기' }, icon(LayoutDashboard, 15), h('span', {}, '정렬'), icon(ChevronDown, 14));
     arrangeBtn.addEventListener('click', () => {
       const sel = store.ws.selectedWidgetId;
@@ -125,7 +144,7 @@ export class WorksheetView {
         this.crossBtn,
         this.dragBtn,
         arrangeBtn,
-        iconButton(Plus, '빈 차트 위젯 추가', () => store.addWidget(this.wsId)),
+        addBtn,
       ),
     );
 
