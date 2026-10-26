@@ -284,3 +284,17 @@ export function neighbor(t: Tile, id: string, side: Side): string | null {
   }
   return best;
 }
+
+/** Tile rectangles (px) for a worksheet of the given size. */
+export function tileRects(t: Tile, box: { w: number; h: number }): Map<string, Rect> {
+  const out = new Map<string, Rect>();
+  rects(t, { x: 0, y: 0, w: box.w, h: box.h }, out);
+  return out;
+}
+
+/** Put a new full-width row at the bottom, taking `frac` of the (grown) height. */
+export function appendRow(t: Tile | null, newId: string, frac: number): Tile {
+  if (!t) return leaf(newId);
+  if (t.kind === 'split' && t.dir === 'col') return { ...t, children: [...t.children, leaf(newId)], sizes: [...t.sizes.map((s) => s * (1 - frac)), frac] };
+  return split('col', [t, leaf(newId)], [1 - frac, frac]);
+}

@@ -11,7 +11,7 @@ import type {
 } from './types';
 import { debounce, uid } from './util';
 import { nextSlot, slotColor } from './palette';
-import { distribute, distributeAround, equalize, fromGrid, neighbor, insertAt, insertAuto, reconcile, remove, renameLeaves, setSizes, swap, type Side, type Tile } from './layout';
+import { appendRow, distribute, distributeAround, equalize, fromGrid, tileRects, neighbor, insertAt, insertAuto, reconcile, remove, renameLeaves, setSizes, swap, type Side, type Tile } from './layout';
 
 type Events = {
   sources: void;
@@ -28,6 +28,10 @@ type Events = {
 };
 
 type Handler<T> = (payload: T) => void;
+
+/** New widgets split tiles down to this height, then start a new row (px). */
+const COMFORT_H = 240;
+const ROW_H = 320;
 
 /** Hundreds of lines in one chart are unreadable and make every redraw move tens of MB. */
 export const MAX_SERIES_PER_CHART = 64;
@@ -374,6 +378,38 @@ class Store {
     const ws = this.sheet(wsId);
     if (!ws) return;
     ws.layout = fromGrid(ws.widgets);
+    ws.height = null;
+    this.emit('widgets', wsId);
+  }
+
+  /** Height the worksheet is drawn at (px). */
+  sheetPx(wsId: string): number {
+    return Math.max(this.viewSize.h, this.sheet(wsId)?.height ?? 0);
+  }
+
+  /**
+   * Where a new widget goes: split the largest tile while every tile stays
+   * comfortably tall; once the sheet is full, add a row below and let the
+   * worksheet grow (it scrolls).
+   */
+  private placeNew(wsId: string, before: Tile | null, id: string): Tile {
+    const H = this.sheetPx(wsId);
+    const box = { w: this.viewSize.w, h: H };
+    const t = insertAuto(before, id, undefined, box);
+    const shortest = Math.min(...[...tileRects(t, box).values()].map((r) => r.h));
+    if (!before || shortest >= COMFORT_H) return t;
+    const grown = H + ROW_H;
+    this.sheet(wsId)!.height = grown;
+    return appendRow(before, id, ROW_H / grown);
+  }
+
+  /** Taller (or back to screen height with null) worksheet, with new fractions for one split. */
+  resizeSheet(wsId: string, height: number | null, splitId?: string, sizes?: number[]) {
+    const ws = this.sheet(wsId);
+    if (!ws) return;
+    ws.height = height !== null && height > this.viewSize.h + 4 ? Math.round(height) : null;
+    const t = this.layoutOf(wsId);
+    if (t && splitId && sizes) this.setTiles(wsId, setSizes(t, splitId, sizes));
     this.emit('widgets', wsId);
   }
 
@@ -389,7 +425,7 @@ class Store {
     const w = defaultWidget(partial);
     const before = this.layoutOf(wsId);
     ws.widgets.push(w);
-    ws.layout = place ? insertAt(before, place.target, w.id, place.side) : insertAuto(before, w.id, undefined, this.viewSize);
+    ws.layout = place ? insertAt(before, place.target, w.id, place.side) : this.placeNew(wsId, before, w.id);
     this.appendSeries(w, items);
     if (!w.title) w.title = this.autoTitle(w);
     this.emit('widgets', wsId);

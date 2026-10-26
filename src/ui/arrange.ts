@@ -3,7 +3,7 @@
  * or widths across the worksheet or within one widget's column / row, and
  * swap a widget with its neighbour (Alt+Shift+arrow keys).
  */
-import { AlignHorizontalSpaceAround, AlignVerticalSpaceAround, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Grid2x2, StretchHorizontal, StretchVertical } from 'lucide';
+import { AlignHorizontalSpaceAround, AlignVerticalSpaceAround, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Grid2x2, Minimize2, StretchHorizontal, StretchVertical } from 'lucide';
 import type { Side } from '../layout';
 import { store } from '../store';
 import type { MenuItem } from './overlays';
@@ -28,6 +28,7 @@ export function arrangeMenu(wsId: string, widgetId: string | null): MenuItem[] {
     { title: '모든 위젯 높이 균등 분배', icon: AlignVerticalSpaceAround, onClick: () => store.distributeTiles(wsId, 'v') },
     { title: '모든 위젯 너비 균등 분배', icon: AlignHorizontalSpaceAround, onClick: () => store.distributeTiles(wsId, 'h') },
     { title: '높이·너비 모두 균등 분배', icon: Grid2x2, onClick: () => store.distributeTiles(wsId, 'both') },
+    { title: '워크시트를 화면 높이에 맞추기', icon: Minimize2, disabled: !store.sheet(wsId)?.height, onClick: () => store.resizeSheet(wsId, null) },
   ];
   const w = widgetId ? store.widget(wsId, widgetId) : null;
   if (w && widgetId) {

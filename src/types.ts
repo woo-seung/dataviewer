@@ -101,6 +101,8 @@ export interface Worksheet {
   widgets: WidgetState[];
   /** Tiled arrangement of the widgets (absent in older workspaces: built from x/y/w/h). */
   layout?: Tile | null;
+  /** Worksheet height in px when taller than the screen (null = fit the screen). */
+  height?: number | null;
   /** Shared timeline; null = fit all data. */
   range: TimeRange | null;
   crosshair: boolean;

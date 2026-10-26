@@ -27,6 +27,9 @@ import { showMenu } from './overlays';
 import { actions } from '../actions';
 import { arrangeMenu } from './arrange';
 
+/** Toolbar buttons that also have keys; hidden when the worksheet is narrow. */
+const optional = <T extends HTMLElement>(el: T) => (el.classList.add('hdr-optional'), el);
+
 const PRESETS: { label: string; ms: number | null; hint?: string }[] = [
   { label: '전체 데이터', ms: null, hint: 'A' },
   { label: '마지막 15분', ms: 15 * 60e3 },
@@ -41,6 +44,8 @@ const PRESETS: { label: string; ms: number | null; hint?: string }[] = [
 export class WorksheetView {
   readonly el: HTMLElement;
   private tilesEl: HTMLElement;
+  private growHandle: HTMLElement;
+  private rootRows: { split: Tile & { kind: 'split' }; kids: HTMLElement[] } | null = null;
   private widgets = new Map<string, ChartWidget>();
   private unsub: (() => void)[] = [];
   private fromInput: HTMLInputElement;
@@ -96,14 +101,14 @@ export class WorksheetView {
         'div',
         { class: 'view-header-range' },
         presetBtn,
-        iconButton(ChevronLeft, '왼쪽으로 이동 (←)', () => this.pan(-0.25)),
+        optional(iconButton(ChevronLeft, '왼쪽으로 이동 (←)', () => this.pan(-0.25))),
         this.fromInput,
         h('span', { class: 'range-sep' }, '→'),
         this.toInput,
-        iconButton(ChevronRight, '오른쪽으로 이동 (→)', () => this.pan(0.25)),
-        iconButton(ZoomIn, '확대 (+)', () => this.zoom(0.5)),
-        iconButton(ZoomOut, '축소 (-)', () => this.zoom(2)),
-        iconButton(Maximize, '전체 보기 (A)', () => this.applyPreset(null)),
+        optional(iconButton(ChevronRight, '오른쪽으로 이동 (→)', () => this.pan(0.25))),
+        optional(iconButton(ZoomIn, '확대 (+)', () => this.zoom(0.5))),
+        optional(iconButton(ZoomOut, '축소 (-)', () => this.zoom(2))),
+        optional(iconButton(Maximize, '전체 보기 (A)', () => this.applyPreset(null))),
         this.durLabel,
       ),
       h('div', { class: 'widget-header-spacer' }),
@@ -131,13 +136,21 @@ export class WorksheetView {
         h('button', { type: 'button', onclick: (() => store.addWidget(this.wsId)) as EventListener }, icon(Plus, 15), ' 빈 위젯'),
       ),
     );
-    const content = h('div', { class: 'view-content' }, this.tilesEl, this.emptyState);
+    // bottom edge of the worksheet: drag to make it taller than the screen
+    this.growHandle = h('div', { class: 'sheet-grow', title: '끌어서 워크시트 높이 조절 (화면보다 길게 가능) · 더블클릭: 화면 높이에 맞추기' });
+    this.growHandle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const rows = this.rootRows;
+      this.pushDrag(e, this.growHandle, rows?.split ?? null, rows?.kids ?? [], rows ? rows.kids.length - 1 : 0);
+    });
+    this.growHandle.addEventListener('dblclick', () => store.resizeSheet(this.wsId, null));
+    const content = h('div', { class: 'view-content' }, this.tilesEl, this.growHandle, this.emptyState);
     this.el = h('div', { class: 'workspace-leaf' }, header, content, h('div', { class: 'maximize-host' }));
 
     this.bindDrop(content);
     // where new tiles go depends on the real worksheet size
     const ro = new ResizeObserver(() => {
-      if (content.clientWidth > 0) store.viewSize = { w: content.clientWidth - 12, h: content.clientHeight - 12 };
+      if (content.clientWidth > 0) store.viewSize = { w: content.clientWidth - 12, h: content.clientHeight - 24 };
     });
     ro.observe(content);
     this.unsub.push(() => ro.disconnect());
@@ -182,15 +195,19 @@ export class WorksheetView {
   /** Lay the widgets out as nested flex splits with draggable gutters. */
   private renderTiles() {
     const tree = store.layoutOf(this.wsId);
+    this.growHandle.hidden = !tree;
     if (!tree) return this.tilesEl.replaceChildren();
-    const root = this.buildTile(tree);
+    const root = this.buildTile(tree, true);
     // more tiles than fit: the worksheet scrolls instead of squeezing them
     this.tilesEl.style.minWidth = `${root.minW}px`;
     this.tilesEl.style.minHeight = `${root.minH}px`;
+    const height = store.sheet(this.wsId)?.height;
+    this.tilesEl.style.height = height ? `max(calc(100% - 12px), ${height}px)` : '';
+    this.rootRows = tree.kind === 'split' && tree.dir === 'col' ? { split: tree, kids: [...root.el.children].filter((c) => !c.classList.contains('tile-gutter')) as HTMLElement[] } : null;
     this.tilesEl.replaceChildren(root.el);
   }
 
-  private buildTile(t: Tile): { el: HTMLElement; minW: number; minH: number } {
+  private buildTile(t: Tile, isRoot = false): { el: HTMLElement; minW: number; minH: number } {
     if (t.kind === 'leaf') {
       const w = this.widgets.get(t.id);
       return { el: w ? w.el : h('div', { class: 'tile' }), minW: MIN_W, minH: MIN_H };
@@ -204,7 +221,7 @@ export class WorksheetView {
       p.el.style.flex = `${t.sizes[i]} 1 0px`;
       p.el.style.minWidth = `${p.minW}px`;
       p.el.style.minHeight = `${p.minH}px`;
-      if (i > 0) el.append(this.gutter(t, i, parts.map((x) => x.el)));
+      if (i > 0) el.append(this.gutter(t, i, parts.map((x) => x.el), isRoot && !row));
       el.append(p.el);
       if (row) {
         minW += p.minW + (i ? GUTTER : 0);
@@ -217,14 +234,23 @@ export class WorksheetView {
     return { el, minW, minH };
   }
 
-  /** Splitter between child i-1 and i: drag to share their space, double-click to even it out. */
-  private gutter(t: Tile & { kind: 'split' }, i: number, kids: HTMLElement[]) {
+  /**
+   * Splitter between child i-1 and i: drag to share their space, double-click
+   * to even it out. Between the worksheet's top-level rows (`push`) dragging
+   * resizes only the row above and moves the rest, so the sheet can grow
+   * past the screen and scroll.
+   */
+  private gutter(t: Tile & { kind: 'split' }, i: number, kids: HTMLElement[], push = false) {
     const row = t.dir === 'row';
-    const g = h('div', { class: `tile-gutter ${row ? 'is-row' : 'is-col'}`, title: '끌어서 크기 조절 · 더블클릭: 반반' });
+    const g = h('div', { class: `tile-gutter ${row ? 'is-row' : 'is-col'}`, title: push ? '끌어서 위 위젯 높이 조절 (아래는 밀려남) · 더블클릭: 반반' : '끌어서 크기 조절 · 더블클릭: 반반' });
+    if (push)
+      g.addEventListener('pointerdown', (down) => {
+        if (down.button === 0) this.pushDrag(down, g, t, kids, i - 1);
+      });
     const sizes = [...t.sizes];
     const apply = () => kids.forEach((k, j) => (k.style.flex = `${sizes[j]} 1 0px`));
     g.addEventListener('pointerdown', (down) => {
-      if (down.button !== 0) return;
+      if (down.button !== 0 || push) return;
       down.preventDefault();
       g.setPointerCapture(down.pointerId);
       g.classList.add('is-active');
@@ -260,6 +286,42 @@ export class WorksheetView {
       store.setTileSizes(this.wsId, t.id, [...sizes]);
     });
     return g;
+  }
+
+  /**
+   * Resize one top-level row (or, without rows, the whole sheet) by dragging:
+   * the other rows keep their height and the worksheet grows or shrinks.
+   */
+  private pushDrag(down: PointerEvent, handle: HTMLElement, split: (Tile & { kind: 'split' }) | null, kids: HTMLElement[], k: number) {
+    down.preventDefault();
+    handle.setPointerCapture(down.pointerId);
+    handle.classList.add('is-active');
+    const px = kids.map((el) => el.getBoundingClientRect().height);
+    const gaps = GUTTER * Math.max(0, kids.length - 1);
+    const startPx = px[k] ?? this.tilesEl.getBoundingClientRect().height;
+    const min = kids.length ? parseFloat(kids[k].style.minHeight) || MIN_H : parseFloat(this.tilesEl.style.minHeight) || MIN_H;
+    let total = this.tilesEl.getBoundingClientRect().height;
+    const move = (e: PointerEvent) => {
+      const v = Math.max(min, startPx + e.clientY - down.clientY);
+      if (kids.length) {
+        px[k] = v;
+        total = px.reduce((a, b) => a + b, 0) + gaps;
+        kids.forEach((el, j) => (el.style.flex = `${px[j]} 1 0px`));
+      } else total = v;
+      this.tilesEl.style.height = `max(calc(100% - 12px), ${total}px)`;
+    };
+    const up = () => {
+      handle.classList.remove('is-active');
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+      const sum = px.reduce((a, b) => a + b, 0) || 1;
+      if (split && kids.length) store.resizeSheet(this.wsId, total, split.id, px.map((p) => p / sum));
+      else store.resizeSheet(this.wsId, total);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
   }
 
   widget(id: string) {
