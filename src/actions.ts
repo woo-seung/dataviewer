@@ -1,5 +1,5 @@
 import { engine } from './engine';
-import { openFiles } from './dialogs';
+import { pickFiles, type Picked } from './dialogs';
 import { project } from './project';
 import { store } from './store';
 import type { SourceInfo } from './types';
@@ -12,29 +12,26 @@ function chartSource(src: SourceInfo) {
   store.addWidget(ws.id, { title: src.name.replace(/\.(csv|tsv|txt)$/i, ''), w: 12, h: 6 }, items);
 }
 
-const isWorkspace = (p: string) => /\.chronos$/i.test(p);
+const isWorkspace = (p: Picked) => /\.chronos$/i.test(p.file.name);
+const isCsv = (p: Picked) => /\.(csv|tsv|txt)$/i.test(p.file.name);
 
 export const actions = {
-  /** Pick CSVs (or a workspace) with the native dialog. */
+  /** Pick CSVs (or a workspace). */
   async openCsv() {
-    for (const p of await openFiles('any', true)) await actions.openPath(p);
+    await actions.openFiles(await pickFiles('any', true));
   },
 
-  async openPath(path: string) {
-    if (isWorkspace(path)) await project.open(path);
-    else await project.importPath(path);
-  },
-
-  /** Paths dropped onto the window. */
-  async openDropped(paths: string[]) {
-    const ws = paths.find(isWorkspace);
+  /** Files picked or dropped onto the window: a workspace opens, CSVs import. */
+  async openFiles(files: Picked[]) {
+    const ws = files.find(isWorkspace);
     if (ws) return project.open(ws);
-    for (const p of paths) if (/\.(csv|tsv|txt)$/i.test(p)) await project.importPath(p);
+    for (const p of files) if (isCsv(p)) await project.importFile(p);
   },
 
   async loadSample() {
-    const { path } = await engine.sample();
-    const src = await project.importPath(path, true);
+    const blob = await engine.sample();
+    const file = new File([blob], 'sample_server_metrics.csv', { type: 'text/csv', lastModified: Date.UTC(2026, 0, 1) });
+    const src = await project.importFile({ file }, true);
     if (!src) return;
     const ws = store.active;
     const id = (n: string) => ({ sourceId: src.id, column: n });

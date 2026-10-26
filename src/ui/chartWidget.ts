@@ -26,13 +26,13 @@ import {
 import { store } from '../store';
 import type { ChartType, SeriesRef, TimeRange, WidgetState } from '../types';
 import { dropTarget, draggable, isSeries, seriesPayload } from './dnd';
-import { engine, type SeriesKey } from '../engine';
-import { saveFile } from '../dialogs';
+import { engine, log, type SeriesKey } from '../engine';
+import { saveBlob } from '../dialogs';
 import { formatTime } from '../data/time';
 import { resolveColor, withAlpha } from '../palette';
-import { cssVar, formatCount, formatValue, h, icon, iconButton, rafThrottle } from '../util';
+import { cssVar, formatBytes, formatCount, formatValue, h, icon, iconButton, rafThrottle } from '../util';
 import { notice, showMenu, type MenuItem } from './overlays';
-import { project } from '../project';
+import { actions } from '../actions';
 
 export const CHART_TYPES: { type: ChartType; label: string; icon: IconNode }[] = [
   { type: 'line', label: '라인', icon: ChartLine },
@@ -327,7 +327,7 @@ export class ChartWidget {
     this.drawCursor(this.lastCursor, false);
     ChartWidget.onRendered?.(this.wsId, this.id, raw, x.length * series.length, performance.now() - t0);
     const ms = performance.now() - t0;
-    if (ms > 2000) void engine.log(`slow chart render: ${series.length} series, ${x.length} points, ${raw} raw rows, ${Math.round(ms)} ms`);
+    if (ms > 2000) log(`slow chart render: ${series.length} series, ${x.length} points, ${raw} raw rows, ${Math.round(ms)} ms`);
     this.renderLegend(series, range);
   }
 
@@ -478,7 +478,7 @@ export class ChartWidget {
     const names = [...new Set(gone.map((s) => store.ws.sourceMeta?.find((m) => m.id === s.sourceId)?.name ?? '(삭제된 소스)'))];
     this.missing.replaceChildren(
       h('span', {}, `데이터 없음: ${names.join(', ')}`),
-      h('button', { type: 'button', onclick: (() => void project.restoreMissing()) as EventListener }, icon(FolderOpen, 14), ' 다시 불러오기'),
+      h('button', { type: 'button', title: '같은 CSV를 다시 선택하면 이 차트에 연결됩니다.', onclick: (() => void actions.openCsv()) as EventListener }, icon(FolderOpen, 14), ' CSV 다시 선택'),
     );
   }
 
@@ -886,11 +886,9 @@ export class ChartWidget {
     }
     const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/png'));
     if (!blob) return;
-    const path = await saveFile('png', `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`);
-    if (!path) return;
+    const name = `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.png`;
     try {
-      await engine.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
-      notice(`스냅샷 저장: ${path}`);
+      if (await saveBlob(blob, 'png', name)) notice(`스냅샷 저장: ${name}`);
     } catch (e) {
       notice(`저장 실패: ${(e as Error).message}`, 6000, 'error');
     }
@@ -902,11 +900,10 @@ export class ChartWidget {
     const range = this.renderedRange ?? store.widgetRange(this.wsId, st);
     if (!range) return;
     const series = this.loadedSeries(st);
-    const path = await saveFile('csv', `${st.title || 'chart'}.csv`);
-    if (!path) return;
+    const name = `${st.title.replace(/[^\w\-가-힣 ]+/g, '_') || 'chart'}.csv`;
     try {
-      const r = await engine.exportCsv(path, series.map((s) => ({ ...seriesKey(s), label: s.label, scale: s.scale, offset: s.offset })), range.start, range.end);
-      notice(`${formatCount(r.rows)}행을 내보냈습니다: ${path}`);
+      const blob = await engine.exportCsv(series.map((s) => ({ ...seriesKey(s), label: s.label, scale: s.scale, offset: s.offset })), range.start, range.end);
+      if (await saveBlob(blob, 'csv', name)) notice(`CSV 내보내기: ${name} (${formatBytes(blob.size)})`);
     } catch (e) {
       notice(`내보내기 실패: ${(e as Error).message}`, 6000, 'error');
     }

@@ -99,5 +99,6 @@ pub fn reveal(path: &Path) -> std::io::Result<()> {
     {
         std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn()?;
     }
+    let _ = path;
     Ok(())
 }

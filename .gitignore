@@ -5,3 +5,4 @@ dist
 target
 src-tauri/gen
 dist-single
+src/wasm/

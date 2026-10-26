@@ -15,14 +15,15 @@ import {
 import { store } from '../store';
 import type { SeriesDrag, SourceInfo } from '../types';
 import { formatTime } from '../data/time';
-import { formatBytes, formatCount, formatValue, h, icon, iconButton } from '../util';
+import { columnMatcher, debounce, formatBytes, formatCount, formatValue, h, icon, iconButton } from '../util';
 import { actions } from '../actions';
-import { project } from '../project';
-import { engine } from '../engine';
 import { modal, showMenu } from './overlays';
 import { RecentFiles } from './recentFiles';
 import { draggable, seriesPayload } from './dnd';
 import { baseName } from '../dialogs';
+
+/** Rows rendered per source; wider sources are narrowed with the search. */
+const MAX_ROWS = 500;
 
 type Key = string; // `${sourceId}::${column}`
 const key = (s: string, c: string) => `${s}::${c}`;
@@ -41,8 +42,15 @@ export class Explorer {
   private visibleOrder: Key[] = [];
 
   constructor() {
-    this.search = h('input', { type: 'search', placeholder: '시리즈 검색…', class: 'search-input', 'aria-label': '시리즈 검색' });
-    this.search.addEventListener('input', () => this.render());
+    this.search = h('input', {
+      type: 'search',
+      placeholder: '열 검색 (정규식)…',
+      class: 'search-input',
+      'aria-label': '열 검색 (정규식)',
+      spellcheck: false,
+      title: '정규식으로 열을 거릅니다 (대소문자 무시). 예: temp|press, ^tag_00[1-3]\n소스 폴더를 끌면 검색된 열만 추가됩니다.',
+    });
+    this.search.addEventListener('input', debounce(() => this.render(), 120));
     this.tree = h('div', { class: 'nav-files-container', role: 'tree' });
     this.el = h(
       'div',
@@ -94,7 +102,9 @@ export class Explorer {
   }
 
   private render() {
-    const q = this.search.value.trim().toLowerCase();
+    const q = this.search.value.trim();
+    const match = columnMatcher(q);
+    this.search.classList.toggle('is-invalid', match.invalid);
     this.tree.replaceChildren();
     this.visibleOrder = [];
     const missing = store.missingSources();
@@ -112,7 +122,8 @@ export class Explorer {
       return;
     }
     for (const src of store.sources.values()) {
-      const cols = src.columns.filter((c) => !q || c.name.toLowerCase().includes(q) || src.name.toLowerCase().includes(q));
+      let cols = src.columns.filter((c) => match.test(c.name));
+      if (q && !cols.length && match.test(src.name)) cols = src.columns;
       if (q && !cols.length) continue;
       const open = q ? true : !this.collapsed.has(src.id);
       const folder = h(
@@ -121,21 +132,22 @@ export class Explorer {
         h('div', { class: 'tree-item-icon collapse-icon' }, icon(ChevronRight, 14)),
         icon(src.missingOriginal ? FileX : FileSpreadsheet, 15, 'file-icon'),
         h('div', { class: 'tree-item-inner' }, src.name),
-        h('div', { class: 'tree-item-flair' }, formatCount(src.rows)),
+        h('div', { class: 'tree-item-flair' }, q ? `${formatCount(cols.length)} / ${formatCount(src.columns.length)}열` : `${formatCount(src.columns.length)}열`),
       );
       folder.addEventListener('click', () => {
         if (this.collapsed.has(src.id)) this.collapsed.delete(src.id);
         else this.collapsed.add(src.id);
         this.render();
       });
-      draggable(folder, () => seriesPayload(this.dragPayload(src.columns.map((c) => key(src.id, c.name)))), () => `${src.name} (${src.columns.length}개 열)`);
+      // dragging the source brings the columns that match the search
+      draggable(folder, () => seriesPayload(this.dragPayload(cols.map((c) => key(src.id, c.name)))), () => `${src.name} (${cols.length}개 열)`);
       folder.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        this.sourceMenu(src, e);
+        this.sourceMenu(src, e, q ? cols.map((c) => key(src.id, c.name)) : null);
       });
       const children = h('div', { class: 'tree-item-children', role: 'group' });
-      if (open)
-        for (const c of cols) {
+      if (open) {
+        for (const c of cols.slice(0, MAX_ROWS)) {
           const k = key(src.id, c.name);
           this.visibleOrder.push(k);
           const row = h(
@@ -171,23 +183,28 @@ export class Explorer {
           (row as HTMLElement & { _key?: Key })._key = k;
           children.append(row);
         }
+        if (cols.length > MAX_ROWS) {
+          for (const c of cols.slice(MAX_ROWS)) this.visibleOrder.push(key(src.id, c.name));
+          children.append(h('div', { class: 'tree-item-self nav-file-title is-more' }, h('div', { class: 'tree-item-inner' }, `… ${formatCount(cols.length - MAX_ROWS)}개 열 더 — 검색으로 좁히세요`)));
+        }
+      }
       this.tree.append(h('div', { class: 'tree-item nav-folder' }, folder, children));
     }
     for (const m of missing) {
-      if (q && !m.name.toLowerCase().includes(q)) continue;
+      if (q && !match.test(m.name)) continue;
       const row = h(
         'div',
-        { class: 'tree-item-self nav-folder-title is-missing', title: `${m.path}\n데이터가 로드되지 않았습니다. 클릭하면 다시 불러옵니다.` },
+        { class: 'tree-item-self nav-folder-title is-missing', title: `${m.name}\n데이터가 로드되지 않았습니다. 클릭해서 같은 CSV를 다시 선택하면 차트에 다시 연결됩니다.` },
         icon(FileX, 15, 'file-icon'),
         h('div', { class: 'tree-item-inner' }, m.name),
         h('div', { class: 'tree-item-flair' }, '다시 열기'),
       );
-      row.addEventListener('click', () => void project.restoreMissing());
+      row.addEventListener('click', () => void actions.openCsv());
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         showMenu(
           [
-            { title: '다시 불러오기', icon: FolderOpen, onClick: () => void project.restoreMissing() },
+            { title: 'CSV 다시 선택', icon: FolderOpen, onClick: () => void actions.openCsv() },
             { title: '목록과 차트에서 제거', icon: Trash2, danger: true, onClick: () => store.removeSource(m.id) },
           ],
           { x: e.clientX, y: e.clientY },
@@ -224,7 +241,7 @@ export class Explorer {
   }
 
   private sourceTooltip(src: SourceInfo) {
-    return `${src.path}\n${formatCount(src.rows)}행 · ${src.columns.length}열 · 파일 ${formatBytes(src.size)} · 메모리 ${formatBytes(src.bytes)}\n${formatTime(src.start)} → ${formatTime(src.end)}${src.missingOriginal ? '\n⚠ 원본 CSV를 찾을 수 없어 워크스페이스에 저장된 데이터를 사용 중' : ''}`;
+    return `${src.name}\n${formatCount(src.rows)}행 · ${src.columns.length}열 · 파일 ${formatBytes(src.size)} · 메모리 ${formatBytes(src.bytes)}\n${formatTime(src.start)} → ${formatTime(src.end)}${src.missingOriginal ? '\n⚠ 원본 CSV를 찾을 수 없어 워크스페이스에 저장된 데이터를 사용 중' : ''}`;
   }
 
   private columnMenu(e: MouseEvent) {
@@ -253,10 +270,20 @@ export class Explorer {
     );
   }
 
-  private sourceMenu(src: SourceInfo, e: MouseEvent) {
+  private sourceMenu(src: SourceInfo, e: MouseEvent, matched: Key[] | null) {
+    const selectMatched = () => {
+      this.selected = new Set(matched ?? []);
+      this.anchor = matched?.[0] ?? null;
+      this.markSelection();
+    };
     showMenu(
       [
-        { title: '모든 열을 차트로', icon: ChartLine, onClick: () => actions.chartSource(src) },
+        ...(matched
+          ? [
+              { title: `검색된 ${formatCount(matched.length)}개 열 선택`, icon: ChartLine, onClick: selectMatched },
+              { title: `검색된 열로 새 차트${matched.length > 64 ? ' (처음 64개)' : ''}`, icon: Plus, onClick: () => this.addToChart(matched, true) },
+            ]
+          : [{ title: '모든 열을 차트로 (처음 8개)', icon: ChartLine, onClick: () => actions.chartSource(src) }]),
         {
           title: '새 워크시트에서 열기',
           icon: FilePlus,
@@ -266,7 +293,6 @@ export class Explorer {
           },
         },
         { title: '정보', icon: Info, onClick: () => this.info(src) },
-        { title: '파일 위치 열기', icon: FolderOpen, disabled: src.missingOriginal, onClick: () => void engine.reveal(src.path) },
         { separator: true, title: '' },
         {
           title: '데이터 소스 제거',
@@ -283,7 +309,7 @@ export class Explorer {
     const m = modal(baseName(src.name), { width: 640 });
     const t = h('table', { class: 'info-table' });
     const rows: [string, string][] = [
-      ['경로', src.path + (src.missingOriginal ? ' (찾을 수 없음 — 저장된 데이터 사용)' : '')],
+      ['파일', src.name + (src.missingOriginal ? ' (원본 없음 — 저장된 데이터 사용)' : '')],
       ['행 수', formatCount(src.rows)],
       ['파일 크기', formatBytes(src.size)],
       ['메모리', `${formatBytes(src.bytes)}${src.compact ? ' (32-bit 값)' : ''}`],

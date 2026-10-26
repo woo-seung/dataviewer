@@ -131,26 +131,50 @@ pub fn resolve(dir: &Path, rel: &str) -> PathBuf {
     p
 }
 
-struct W {
-    f: BufWriter<File>,
-    pos: u64,
+/// One run of bytes to write: owned (padding, header) or borrowed from loaded data.
+pub enum Piece<'a> {
+    Owned(Vec<u8>),
+    Borrowed(&'a [u8]),
 }
 
-impl W {
-    fn pad(&mut self) -> std::io::Result<()> {
+impl Piece<'_> {
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Piece::Owned(v) => v,
+            Piece::Borrowed(b) => b,
+        }
+    }
+}
+
+/// What a save writes: `pieces` in order starting at byte `start` (0 = new file).
+pub struct SavePlan<'a> {
+    pub start: u64,
+    pub rewrite: bool,
+    pub pieces: Vec<Piece<'a>>,
+    pub file_size: u64,
+}
+
+struct W<'a> {
+    pos: u64,
+    pieces: Vec<Piece<'a>>,
+}
+
+impl<'a> W<'a> {
+    fn put(&mut self, p: Piece<'a>) {
+        self.pos += p.bytes().len() as u64;
+        self.pieces.push(p);
+    }
+    fn pad(&mut self) {
         let pad = (8 - self.pos % 8) % 8;
         if pad > 0 {
-            self.f.write_all(&[0u8; 8][..pad as usize])?;
-            self.pos += pad;
+            self.put(Piece::Owned(vec![0u8; pad as usize]));
         }
-        Ok(())
     }
-    fn sec(&mut self, bytes: &[u8], t: Dt, n: usize) -> std::io::Result<Sec> {
-        self.pad()?;
+    fn sec(&mut self, bytes: &'a [u8], t: Dt, n: usize) -> Sec {
+        self.pad();
         let s = Sec { o: self.pos, n: n as u64, t };
-        self.f.write_all(bytes)?;
-        self.pos += bytes.len() as u64;
-        Ok(s)
+        self.put(Piece::Borrowed(bytes));
+        s
     }
 }
 
@@ -158,24 +182,24 @@ fn nn(v: f64) -> Option<f64> {
     (!v.is_nan()).then_some(v)
 }
 
-fn write_source(w: &mut W, s: &Source, ws_dir: Option<&Path>) -> std::io::Result<FileSource> {
-    let time = w.sec(bytemuck::cast_slice(&s.time), Dt::F64, s.time.len())?;
+fn write_source<'a>(w: &mut W<'a>, s: &'a Source, ws_dir: Option<&Path>) -> FileSource {
+    let time = w.sec(bytemuck::cast_slice(&s.time), Dt::F64, s.time.len());
     let mut columns = Vec::with_capacity(s.columns.len());
     for c in &s.columns {
         let dt = if matches!(c.values, Values::F32(_)) { Dt::F32 } else { Dt::F64 };
-        let values = w.sec(c.values.bytes(), dt, c.values.len())?;
+        let values = w.sec(c.values.bytes(), dt, c.values.len());
         let b = &c.blocks;
         let blocks = FileBlocks {
-            min: w.sec(bytemuck::cast_slice(&b.min), Dt::F64, b.min.len())?,
-            max: w.sec(bytemuck::cast_slice(&b.max), Dt::F64, b.max.len())?,
-            min_idx: w.sec(bytemuck::cast_slice(&b.min_idx), Dt::U32, b.min_idx.len())?,
-            max_idx: w.sec(bytemuck::cast_slice(&b.max_idx), Dt::U32, b.max_idx.len())?,
-            sum: w.sec(bytemuck::cast_slice(&b.sum), Dt::F64, b.sum.len())?,
-            count: w.sec(bytemuck::cast_slice(&b.count), Dt::U32, b.count.len())?,
+            min: w.sec(bytemuck::cast_slice(&b.min), Dt::F64, b.min.len()),
+            max: w.sec(bytemuck::cast_slice(&b.max), Dt::F64, b.max.len()),
+            min_idx: w.sec(bytemuck::cast_slice(&b.min_idx), Dt::U32, b.min_idx.len()),
+            max_idx: w.sec(bytemuck::cast_slice(&b.max_idx), Dt::U32, b.max_idx.len()),
+            sum: w.sec(bytemuck::cast_slice(&b.sum), Dt::F64, b.sum.len()),
+            count: w.sec(bytemuck::cast_slice(&b.count), Dt::U32, b.count.len()),
         };
         columns.push(FileColumn { name: c.name.clone(), min: nn(c.min), max: nn(c.max), mean: nn(c.mean), values, blocks });
     }
-    Ok(meta(s, ws_dir, time, columns))
+    meta(s, ws_dir, time, columns)
 }
 
 fn meta(s: &Source, ws_dir: Option<&Path>, time: Sec, columns: Vec<FileColumn>) -> FileSource {
@@ -196,16 +220,27 @@ fn meta(s: &Source, ws_dir: Option<&Path>, time: Sec, columns: Vec<FileColumn>) 
 }
 
 fn write_tail(w: &mut W, header: &Header) -> Result<(), Error> {
-    w.pad()?;
+    w.pad();
     let json = serde_json::to_vec(header)?;
     let off = w.pos;
-    w.f.write_all(&json)?;
-    w.f.write_all(&off.to_le_bytes())?;
-    w.f.write_all(&(json.len() as u64).to_le_bytes())?;
-    w.f.write_all(MAGIC)?;
-    w.pos += json.len() as u64 + FOOTER;
-    w.f.flush()?;
+    let len = json.len() as u64;
+    w.put(Piece::Owned(json));
+    let mut foot = Vec::with_capacity(FOOTER as usize);
+    foot.extend_from_slice(&off.to_le_bytes());
+    foot.extend_from_slice(&len.to_le_bytes());
+    foot.extend_from_slice(MAGIC);
+    w.put(Piece::Owned(foot));
     Ok(())
+}
+
+/// Header location from a file's last 24 bytes, if they are an intact footer.
+pub fn footer(foot: &[u8], end: u64) -> Option<(u64, u64)> {
+    if foot.len() != FOOTER as usize || &foot[16..] != MAGIC {
+        return None;
+    }
+    let off = u64::from_le_bytes(foot[0..8].try_into().unwrap());
+    let hl = u64::from_le_bytes(foot[8..16].try_into().unwrap());
+    (off.checked_add(hl)?.checked_add(FOOTER)? == end).then_some((off, hl))
 }
 
 /// Read the header via the footer; falls back to the last intact footer if a save was interrupted.
@@ -223,14 +258,7 @@ pub fn read_header(f: &mut File) -> Result<Header, Error> {
         let mut foot = [0u8; 24];
         f.seek(SeekFrom::Start(end - FOOTER)).ok()?;
         f.read_exact(&mut foot).ok()?;
-        if &foot[16..] != MAGIC {
-            return None;
-        }
-        let off = u64::from_le_bytes(foot[0..8].try_into().unwrap());
-        let hl = u64::from_le_bytes(foot[8..16].try_into().unwrap());
-        if off.checked_add(hl)? + FOOTER != end {
-            return None;
-        }
+        let (off, hl) = footer(&foot, end)?;
         let mut buf = vec![0u8; hl as usize];
         f.seek(SeekFrom::Start(off)).ok()?;
         f.read_exact(&mut buf).ok()?;
@@ -254,41 +282,29 @@ pub fn read_header(f: &mut File) -> Result<Header, Error> {
     Err(Error::msg("워크스페이스 파일이 손상되었습니다."))
 }
 
-fn read_vec<T: bytemuck::Pod + Default + Clone>(f: &mut File, s: &Sec) -> std::io::Result<Vec<T>> {
-    let mut v = vec![T::default(); s.n as usize];
-    f.seek(SeekFrom::Start(s.o))?;
-    f.read_exact(bytemuck::cast_slice_mut(&mut v))?;
-    Ok(v)
-}
-
-/// Load a source's arrays from the file (no parsing).
-pub fn load_source(f: &mut File, fs: &FileSource, path: PathBuf) -> Result<Source, Error> {
-    let time: Vec<f64> = read_vec(f, &fs.time)?;
-    let mut columns = Vec::with_capacity(fs.columns.len());
-    for c in &fs.columns {
-        let values = match c.values.t {
-            Dt::F32 => Values::F32(read_vec(f, &c.values)?),
-            _ => Values::F64(read_vec(f, &c.values)?),
-        };
-        let b = &c.blocks;
-        let blocks = Blocks {
-            min: read_vec(f, &b.min)?,
-            max: read_vec(f, &b.max)?,
-            min_idx: read_vec(f, &b.min_idx)?,
-            max_idx: read_vec(f, &b.max_idx)?,
-            sum: read_vec(f, &b.sum)?,
-            count: read_vec(f, &b.count)?,
-        };
-        columns.push(Column {
-            name: c.name.clone(),
-            values,
-            blocks,
-            min: c.min.unwrap_or(f64::NAN),
-            max: c.max.unwrap_or(f64::NAN),
-            mean: c.mean.unwrap_or(f64::NAN),
-        });
-    }
-    Ok(Source {
+/// A source with zeroed arrays sized for `fs`, to be filled by [`section_targets`].
+pub fn blank_source(fs: &FileSource, path: PathBuf) -> Source {
+    let z64 = |s: &Sec| vec![0f64; s.n as usize];
+    let z32 = |s: &Sec| vec![0u32; s.n as usize];
+    let columns = fs
+        .columns
+        .iter()
+        .map(|c| {
+            let b = &c.blocks;
+            Column {
+                name: c.name.clone(),
+                values: match c.values.t {
+                    Dt::F32 => Values::F32(vec![0f32; c.values.n as usize]),
+                    _ => Values::F64(z64(&c.values)),
+                },
+                blocks: Blocks { min: z64(&b.min), max: z64(&b.max), min_idx: z32(&b.min_idx), max_idx: z32(&b.max_idx), sum: z64(&b.sum), count: z32(&b.count) },
+                min: c.min.unwrap_or(f64::NAN),
+                max: c.max.unwrap_or(f64::NAN),
+                mean: c.mean.unwrap_or(f64::NAN),
+            }
+        })
+        .collect();
+    Source {
         id: fs.id.clone(),
         name: fs.name.clone(),
         path,
@@ -297,10 +313,40 @@ pub fn load_source(f: &mut File, fs: &FileSource, path: PathBuf) -> Result<Sourc
         imported_at: fs.imported_at,
         import: fs.import.clone(),
         token: fs.token.clone(),
-        time,
+        time: z64(&fs.time),
         columns,
         missing_original: false,
-    })
+    }
+}
+
+/// Every array of `src` paired with the file offset its bytes come from.
+pub fn section_targets<'a>(src: &'a mut Source, fs: &FileSource) -> Vec<(u64, &'a mut [u8])> {
+    let mut out: Vec<(u64, &'a mut [u8])> = vec![(fs.time.o, bytemuck::cast_slice_mut(&mut src.time))];
+    for (c, fc) in src.columns.iter_mut().zip(&fs.columns) {
+        let vals: &mut [u8] = match &mut c.values {
+            Values::F64(v) => bytemuck::cast_slice_mut(v),
+            Values::F32(v) => bytemuck::cast_slice_mut(v),
+        };
+        out.push((fc.values.o, vals));
+        let (b, fb) = (&mut c.blocks, &fc.blocks);
+        out.push((fb.min.o, bytemuck::cast_slice_mut(&mut b.min)));
+        out.push((fb.max.o, bytemuck::cast_slice_mut(&mut b.max)));
+        out.push((fb.min_idx.o, bytemuck::cast_slice_mut(&mut b.min_idx)));
+        out.push((fb.max_idx.o, bytemuck::cast_slice_mut(&mut b.max_idx)));
+        out.push((fb.sum.o, bytemuck::cast_slice_mut(&mut b.sum)));
+        out.push((fb.count.o, bytemuck::cast_slice_mut(&mut b.count)));
+    }
+    out
+}
+
+/// Load a source's arrays from the file (no parsing).
+pub fn load_source(f: &mut File, fs: &FileSource, path: PathBuf) -> Result<Source, Error> {
+    let mut src = blank_source(fs, path);
+    for (off, buf) in section_targets(&mut src, fs) {
+        f.seek(SeekFrom::Start(off))?;
+        f.read_exact(buf)?;
+    }
+    Ok(src)
 }
 
 fn src_bytes(fs: &FileSource) -> u64 {
@@ -320,11 +366,10 @@ pub struct SaveReport {
     pub rewrote: bool,
 }
 
-pub fn save(path: &Path, workspace: Value, sources: &[std::sync::Arc<Source>], now: i64) -> Result<SaveReport, Error> {
-    let ws_dir = path.parent().map(|p| p.to_path_buf());
-    let existing = File::open(path).ok().and_then(|mut f| read_header(&mut f).ok().map(|h| (h, f.metadata().map(|m| m.len()).unwrap_or(0))));
+/// Decide how to save `sources` given the file's current header and length
+/// (None = new file): append new sections + header, or rewrite everything.
+pub fn plan_save<'a>(existing: Option<(&Header, u64)>, workspace: Value, sources: &'a [std::sync::Arc<Source>], now: i64, ws_dir: Option<&Path>) -> Result<SavePlan<'a>, Error> {
     let mut header = Header { app: "chronos-vault".into(), format: 3, saved_at: now, workspace, sources: Vec::new() };
-
     if let Some((old, len)) = existing {
         let reusable: Vec<Option<&FileSource>> = sources.iter().map(|s| old.sources.iter().find(|o| o.id == s.id && o.token == s.token)).collect();
         let live: u64 = reusable.iter().flatten().map(|o| src_bytes(o)).sum();
@@ -332,35 +377,47 @@ pub fn save(path: &Path, workspace: Value, sources: &[std::sync::Arc<Source>], n
         let dead = len.saturating_sub(live);
         // small files are simply rewritten; big ones append unless a third is dead space
         if len + new_bytes > (32u64 << 20) && dead <= (len + new_bytes) / 3 {
-            // append mode: keep the file, add new sections + a fresh header
-            let f = OpenOptions::new().write(true).open(path)?;
-            let mut w = W { pos: len, f: BufWriter::with_capacity(8 << 20, f) };
-            w.f.seek(SeekFrom::Start(len))?;
+            let mut w = W { pos: len, pieces: Vec::new() };
             for (s, r) in sources.iter().zip(&reusable) {
                 header.sources.push(match r {
-                    Some(o) => FileSource { path_abs: s.path.to_string_lossy().into_owned(), path_rel: ws_dir.as_deref().and_then(|d| relative(d, &s.path)), ..(*o).clone() },
-                    None => write_source(&mut w, s, ws_dir.as_deref())?,
+                    Some(o) => FileSource { path_abs: s.path.to_string_lossy().into_owned(), path_rel: ws_dir.and_then(|d| relative(d, &s.path)), ..(*o).clone() },
+                    None => write_source(&mut w, s, ws_dir),
                 });
             }
             write_tail(&mut w, &header)?;
-            let f = w.f.into_inner().map_err(|e| Error::Io(e.into_error()))?;
-            f.sync_data()?;
-            return Ok(SaveReport { file_size: w.pos, written: w.pos - len, rewrote: false });
+            return Ok(SavePlan { start: len, rewrite: false, file_size: w.pos, pieces: w.pieces });
         }
+    }
+    let mut w = W { pos: 0, pieces: Vec::new() };
+    w.put(Piece::Owned(MAGIC.to_vec()));
+    for s in sources {
+        header.sources.push(write_source(&mut w, s, ws_dir));
+    }
+    write_tail(&mut w, &header)?;
+    Ok(SavePlan { start: 0, rewrite: true, file_size: w.pos, pieces: w.pieces })
+}
+
+pub fn save(path: &Path, workspace: Value, sources: &[std::sync::Arc<Source>], now: i64) -> Result<SaveReport, Error> {
+    let ws_dir = path.parent().map(|p| p.to_path_buf());
+    let existing = File::open(path).ok().and_then(|mut f| read_header(&mut f).ok().map(|h| (h, f.metadata().map(|m| m.len()).unwrap_or(0))));
+    let plan = plan_save(existing.as_ref().map(|(h, l)| (h, *l)), workspace, sources, now, ws_dir.as_deref())?;
+    let write = |f: File, start: u64| -> Result<(), Error> {
+        let mut b = BufWriter::with_capacity(8 << 20, f);
+        b.seek(SeekFrom::Start(start))?;
+        for p in &plan.pieces {
+            b.write_all(p.bytes())?;
+        }
+        let f = b.into_inner().map_err(|e| Error::Io(e.into_error()))?;
+        f.sync_data()?;
+        Ok(())
+    };
+    if !plan.rewrite {
+        write(OpenOptions::new().write(true).open(path)?, plan.start)?;
+        return Ok(SaveReport { file_size: plan.file_size, written: plan.file_size - plan.start, rewrote: false });
     }
     // full write to a temp file next to the target, then replace it
     let tmp = path.with_extension("chronos.tmp");
-    let f = File::create(&tmp)?;
-    let mut w = W { pos: 0, f: BufWriter::with_capacity(8 << 20, f) };
-    w.f.write_all(MAGIC)?;
-    w.pos = 8;
-    for s in sources {
-        header.sources.push(write_source(&mut w, s, ws_dir.as_deref())?);
-    }
-    write_tail(&mut w, &header)?;
-    let f = w.f.into_inner().map_err(|e| Error::Io(e.into_error()))?;
-    f.sync_data()?;
-    drop(f);
+    write(File::create(&tmp)?, 0)?;
     std::fs::rename(&tmp, path)?;
-    Ok(SaveReport { file_size: w.pos, written: w.pos, rewrote: true })
+    Ok(SaveReport { file_size: plan.file_size, written: plan.file_size, rewrote: true })
 }

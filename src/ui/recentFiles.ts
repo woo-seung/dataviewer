@@ -1,5 +1,4 @@
 import { ChevronRight, FilePlus, FolderOpen, LayoutDashboard, Save, X } from 'lucide';
-import { baseName } from '../dialogs';
 import { project } from '../project';
 import { store } from '../store';
 import { h, icon, iconButton } from '../util';
@@ -31,7 +30,7 @@ export class RecentFiles {
     if (!this.collapsed) {
       const cur = h(
         'div',
-        { class: 'tree-item-self nav-file-title is-active', title: project.untitled ? '저장하지 않은 워크스페이스 (자동 보관됨)' : (project.path ?? '') },
+        { class: 'tree-item-self nav-file-title is-active', title: project.untitled ? '저장하지 않은 워크스페이스 (브라우저에 자동 보관됨)' : project.name },
         icon(LayoutDashboard, 14, 'file-icon'),
         h('div', { class: 'tree-item-inner' }, project.title),
         h('div', { class: 'tree-item-flair' }, project.saving ? '저장 중' : project.untitled ? '자동 보관' : project.dirty ? '●' : '저장됨'),
@@ -46,23 +45,26 @@ export class RecentFiles {
           iconButton(FilePlus, '새 워크스페이스', () => void project.newWorkspace(), 'clickable-icon nav-action-button'),
         ),
       );
-      const recent = project.recent.filter((p) => p !== project.path);
+      const recent = project.recent.filter((r) => r.id !== project.recentId);
       if (recent.length) out.push(h('div', { class: 'recent-caption' }, '최근 파일'));
-      for (const p of recent) {
+      for (const r of recent) {
         const row = h(
           'div',
-          { class: 'tree-item-self nav-file-title', title: p },
+          { class: 'tree-item-self nav-file-title', title: r.name },
           icon(LayoutDashboard, 14, 'file-icon'),
-          h('div', { class: 'tree-item-inner' }, baseName(p).replace(/\.chronos$/i, '')),
-          iconButton(X, '목록에서 제거', () => project.forget(p)),
+          h('div', { class: 'tree-item-inner' }, r.name.replace(/\.chronos$/i, '')),
+          iconButton(X, '목록에서 제거', () => project.forget(r.id)),
         );
-        row.addEventListener('click', () => void project.open(p));
+        const open = async () => {
+          if (await project.confirmDiscard()) await project.openRecent(r);
+        };
+        row.addEventListener('click', () => void open());
         row.addEventListener('contextmenu', (e) => {
           e.preventDefault();
           showMenu(
             [
-              { title: '열기', icon: FolderOpen, onClick: () => void project.open(p) },
-              { title: '목록에서 제거', icon: X, onClick: () => project.forget(p) },
+              { title: '열기', icon: FolderOpen, onClick: () => void open() },
+              { title: '목록에서 제거', icon: X, onClick: () => project.forget(r.id) },
             ],
             { x: e.clientX, y: e.clientY },
           );

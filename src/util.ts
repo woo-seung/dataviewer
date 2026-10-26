@@ -185,3 +185,20 @@ export function pickFiles(accept: string, multiple = true): Promise<File[]> {
 export function clamp(v: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, v));
 }
+
+/**
+ * Column filter like binjr's: the query is a case-insensitive regular
+ * expression (`temp|press`, `^tag_00[1-3]`); an incomplete or invalid pattern
+ * falls back to plain substring matching.
+ */
+export function columnMatcher(query: string): { test: (name: string) => boolean; invalid: boolean } {
+  const q = query.trim();
+  if (!q) return { test: () => true, invalid: false };
+  try {
+    const re = new RegExp(q, 'i');
+    return { test: (n) => re.test(n), invalid: false };
+  } catch {
+    const l = q.toLowerCase();
+    return { test: (n) => n.toLowerCase().includes(l), invalid: true };
+  }
+}

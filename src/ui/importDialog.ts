@@ -1,10 +1,9 @@
-import { engine, type CsvPreview } from '../engine';
-import { baseName } from '../dialogs';
+import { ENGINE_LIMIT, engine, log, type CsvPreview } from '../engine';
 import { detectTimeFormat, formatTime, parseTime, type TimeFormat } from '../data/time';
 import { progressNotice } from '../project';
 import { store } from '../store';
 import type { ImportSettings, SourceInfo } from '../types';
-import { formatBytes, formatCount, h } from '../util';
+import { columnMatcher, debounce, formatBytes, formatCount, h } from '../util';
 import { button, modal, notice } from './overlays';
 
 const DELIMS: [string, string][] = [
@@ -28,6 +27,8 @@ type Precision = 'f64' | 'f32';
 
 /** Above this the default switches to 32-bit values to halve memory. */
 const COMPACT_THRESHOLD = 2 * 1024 ** 3;
+/** Columns shown in the sample table (the picker lists all of them). */
+const PREVIEW_COLS = 40;
 
 const estimateBytes = (rows: number, cols: number, compact: boolean) => rows * (8 + cols * (compact ? 4 : 8) + cols * 0.6);
 
@@ -50,29 +51,29 @@ function setting(name: string, desc: string | HTMLElement, control: HTMLElement)
 const guess = (p: CsvPreview): TimeFormat => detectTimeFormat(p.rows.map((r) => r[p.timeColumn] ?? ''));
 
 /** Ask for import options for a CSV path; resolves with the imported source (or null on cancel). */
-export async function openImportDialog(path: string, quick = false): Promise<SourceInfo | null> {
-  const name = baseName(path);
+export async function openImportDialog(file: File, quick = false): Promise<SourceInfo | null> {
+  const name = file.name;
   let preview: CsvPreview;
   try {
-    preview = await engine.preview(path);
+    preview = await engine.preview(file);
   } catch (e) {
     notice(`${name}: ${(e as Error).message}`, 6000, 'error');
     return null;
   }
-  // a source the layout still references (same path) keeps its id and columns
-  const relink = store.missingSources().find((m) => m.path === path);
+  // a source the layout still references (same file name) keeps its id and columns
+  const relink = store.missingSources().find((m) => m.name === name);
   let selected = new Set(preview.numericColumns);
   if (relink) {
     const wanted = new Set(relink.columns);
     const match = preview.header.map((n, i) => (wanted.has(n) ? i : -1)).filter((i) => i >= 0 && i !== preview.timeColumn);
     if (match.length) selected = new Set(match);
   }
-  // keep the import well inside the free RAM: 32-bit when 64-bit would take over 40% of it
-  const mem = await engine.memory().catch(() => null);
-  const freeBytes = mem ? mem.availableMb * 1024 * 1024 : Infinity;
+  // the engine holds at most ~4 GB (32-bit WebAssembly), shared by all sources
+  const used = [...store.sources.values()].reduce((n, s) => n + s.bytes, 0);
+  const freeBytes = ENGINE_LIMIT * 0.9 - used;
   const defaultPrecision = (): Precision => {
     const need = estimateBytes(preview.estimatedRows, selected.size, false);
-    return need > COMPACT_THRESHOLD || need > freeBytes * 0.4 ? 'f32' : 'f64';
+    return need > COMPACT_THRESHOLD || need > freeBytes * 0.6 ? 'f32' : 'f64';
   };
   const settingsOf = (fmt: TimeFormat, compact: boolean): ImportSettings => ({
     delimiter: preview.delimiter,
@@ -82,7 +83,7 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
     columns: [...selected].sort((a, b) => a - b).map((i) => preview.header[i]),
     compact,
   });
-  if (quick && selected.size) return runImport(path, settingsOf(preview.timeFormat, defaultPrecision() === 'f32'), relink?.id);
+  if (quick && selected.size) return runImport(file, settingsOf(preview.timeFormat, defaultPrecision() === 'f32'), relink?.id);
 
   return new Promise((resolve) => {
     let done = false;
@@ -96,7 +97,7 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
     const updateMem = () => {
       const bytes = estimateBytes(preview.estimatedRows, selected.size, precision === 'f32');
       const tight = bytes > freeBytes * 0.8;
-      memLine.textContent = `예상 ${formatCount(preview.estimatedRows)}행 · 메모리 약 ${formatBytes(bytes)}${mem ? ` / 사용 가능 ${formatBytes(freeBytes)}` : ''}${tight ? ' — 메모리가 부족할 수 있습니다. 32-bit로 바꾸거나 열 수를 줄이세요.' : ''}`;
+      memLine.textContent = `예상 ${formatCount(preview.estimatedRows)}행 · 메모리 약 ${formatBytes(bytes)} / 사용 가능 ${formatBytes(Math.max(0, freeBytes))}${tight ? ' — 메모리가 부족할 수 있습니다. 32-bit로 바꾸거나 열 수를 줄이세요.' : ''}`;
       memLine.classList.toggle('is-warning', tight);
     };
 
@@ -117,7 +118,7 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
       );
       const delimSelect = select(DELIMS, (DELIMS.find((d) => d[0] === preview.delimiter)?.[0] ?? '') as string, async (v) => {
         try {
-          preview = await engine.preview(path, v);
+          preview = await engine.preview(file, v);
         } catch (e) {
           notice((e as Error).message, 5000, 'error');
           return;
@@ -175,32 +176,96 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
         ),
       );
 
+      body.append(columnPicker(), previewArea);
+      renderPreview();
+    };
+
+    // ---- column picker: regex search + select / deselect the matching columns ----
+    let query = '';
+    const previewArea = h('div');
+    const listEl = h('div', { class: 'column-pick-list' });
+    const countEl = h('span', { class: 'column-pick-count' });
+    const search = h('input', { type: 'search', class: 'column-pick-search', placeholder: '열 검색 — 정규식 (예: temp|press, ^tag_00[1-3])', spellcheck: false }) as HTMLInputElement;
+    const matching = () => {
+      const m = columnMatcher(query);
+      search.classList.toggle('is-invalid', m.invalid);
+      search.title = m.invalid ? '정규식이 올바르지 않아 일반 텍스트로 검색합니다.' : '';
+      return preview.header.map((_, i) => i).filter((i) => i !== preview.timeColumn && m.test(preview.header[i]));
+    };
+    const selectionChanged = () => {
+      if (!precisionTouched) precision = defaultPrecision();
+      updateMem();
+      renderList();
+      renderPreview();
+    };
+    const setAll = (on: boolean) => {
+      for (const i of matching()) on ? selected.add(i) : selected.delete(i);
+      selectionChanged();
+    };
+    const numericOnly = () => {
+      const numeric = new Set(preview.numericColumns);
+      for (const i of matching()) numeric.has(i) ? selected.add(i) : selected.delete(i);
+      selectionChanged();
+    };
+    function renderList() {
+      const idx = matching();
+      const total = preview.header.length - 1;
+      countEl.textContent = `선택 ${formatCount(selected.size)} / ${formatCount(total)}열${query.trim() ? ` · 검색 결과 ${formatCount(idx.length)}` : ''}`;
+      const numeric = new Set(preview.numericColumns);
+      listEl.replaceChildren(
+        ...idx.map((i) => {
+          const cb = h('input', { type: 'checkbox', checked: selected.has(i) }) as HTMLInputElement;
+          cb.addEventListener('change', () => {
+            if (cb.checked) selected.add(i);
+            else selected.delete(i);
+            selectionChanged();
+          });
+          return h('label', { class: `column-pick-item ${numeric.has(i) ? '' : 'is-text'}`, title: numeric.has(i) ? preview.header[i] : `${preview.header[i]} (숫자가 아닌 값이 많은 열)` }, cb, h('span', {}, preview.header[i]));
+        }),
+      );
+      if (!idx.length) listEl.append(h('div', { class: 'column-pick-empty' }, '일치하는 열이 없습니다.'));
+    }
+    const debouncedList = debounce(() => {
+      renderList();
+      renderPreview();
+    }, 120);
+    search.addEventListener('input', () => {
+      query = search.value;
+      debouncedList();
+    });
+    function columnPicker() {
+      search.value = query;
+      renderList();
+      return h(
+        'div',
+        { class: 'column-pick' },
+        h(
+          'div',
+          { class: 'column-pick-toolbar' },
+          search,
+          button('모두 선택', () => setAll(true)),
+          button('모두 해제', () => setAll(false)),
+          button('숫자 열만', () => numericOnly()),
+          countEl,
+        ),
+        listEl,
+      );
+    }
+    // sample rows for the time column + the first selected columns that match the search
+    function renderPreview() {
+      const tCol = preview.timeColumn;
+      const shown = [tCol, ...matching().filter((i) => selected.has(i)).slice(0, PREVIEW_COLS)];
       const table = h('table', { class: 'preview-table' });
-      const thead = h('tr');
-      preview.header.forEach((col, i) => {
-        const isTime = i === tCol;
-        const cb = h('input', { type: 'checkbox', checked: selected.has(i), disabled: isTime });
-        cb.addEventListener('change', () => {
-          if (cb.checked) selected.add(i);
-          else selected.delete(i);
-          if (!precisionTouched) precision = defaultPrecision();
-          updateMem();
-        });
-        thead.append(h('th', { class: isTime ? 'is-time' : '' }, h('label', {}, isTime ? h('span', { class: 'tag' }, 'TIME') : cb, ' ', col)));
-      });
-      table.append(h('thead', {}, thead));
+      table.append(h('thead', {}, h('tr', {}, ...shown.map((i) => h('th', { class: i === tCol ? 'is-time' : '' }, i === tCol ? h('span', { class: 'tag' }, 'TIME') : '', ' ', preview.header[i])))));
       const tbody = h('tbody');
-      for (const r of preview.rows.slice(0, 12)) {
-        const tr = h('tr');
-        preview.header.forEach((_, i) => tr.append(h('td', { class: i === tCol ? 'is-time' : '' }, r[i] ?? '')));
-        tbody.append(tr);
-      }
+      for (const r of preview.rows.slice(0, 12)) tbody.append(h('tr', {}, ...shown.map((i) => h('td', { class: i === tCol ? 'is-time' : '' }, r[i] ?? ''))));
       table.append(tbody);
-      body.append(
-        h('div', { class: 'preview-caption' }, `미리보기 · ${formatBytes(preview.size)} · ${path}`),
+      const more = selected.size - (shown.length - 1);
+      previewArea.replaceChildren(
+        h('div', { class: 'preview-caption' }, `미리보기 · ${formatBytes(preview.size)} · ${name}${more > 0 ? ` · 선택한 열 중 ${PREVIEW_COLS}개만 표시` : ''}`),
         h('div', { class: 'preview-scroll' }, table),
       );
-    };
+    }
     rerender();
 
     m.footer.append(
@@ -214,7 +279,7 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
           }
           done = true;
           m.close();
-          resolve(await runImport(path, settingsOf(fmt, precision === 'f32'), relink?.id));
+          resolve(await runImport(file, settingsOf(fmt, precision === 'f32'), relink?.id));
         },
         true,
       ),
@@ -222,22 +287,23 @@ export async function openImportDialog(path: string, quick = false): Promise<Sou
   });
 }
 
-async function runImport(path: string, settings: ImportSettings, id?: string): Promise<SourceInfo | null> {
-  const name = baseName(path);
+async function runImport(file: File, settings: ImportSettings, id?: string): Promise<SourceInfo | null> {
+  const name = file.name;
   const pn = progressNotice(`${name} 불러오는 중`);
   const t0 = performance.now();
-  const job = engine.import(path, settings, (p) => pn.update(p), id);
+  const job = engine.import(file, settings, (p) => pn.update(p), id);
   pn.onCancel(job.cancel);
   try {
     const src = await job.promise;
     pn.hide();
-    void engine.log(`imported ${name}: ${src.rows} rows, ${Math.round(src.bytes / 1e6)} MB`);
+    log(`import ${name}: ${src.rows} rows x ${src.columns.length} cols, ${Math.round(src.bytes / 1e6)} MB, ${Math.round(performance.now() - t0)} ms`);
     store.addSource(src);
     notice(`${name}: ${formatCount(src.rows)}행 × ${src.columns.length}열 (${((performance.now() - t0) / 1000).toFixed(1)}s${settings.compact ? ', 32-bit' : ''})`);
     return src;
   } catch (e) {
     pn.hide();
     const msg = (e as Error).message;
+    log(`import ${name} failed: ${msg}`);
     notice(msg === '취소됨' ? `${name}: 가져오기를 취소했습니다.` : `${name}: ${msg}`, msg === '취소됨' ? 3000 : 7000, msg === '취소됨' ? 'info' : 'error');
     return null;
   }

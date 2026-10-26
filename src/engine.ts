@@ -1,8 +1,7 @@
 /**
- * Client for the Rust data engine. In the desktop app every call goes through
- * one Tauri command; for browser tests the same protocol runs over the HTTP
- * bridge (`?bridge=http://127.0.0.1:7878`). Replies are a tag byte (0 = JSON,
- * 1 = binary) followed by the payload.
+ * Client for the data engine, which runs in a Web Worker (src/engineWorker.ts)
+ * as WebAssembly. Every call is a message; chart windows come back as
+ * transferred binary buffers.
  */
 import type { ColumnInfo, ImportSettings, SourceInfo } from './types';
 import type { TimeFormat } from './data/time';
@@ -10,94 +9,58 @@ import { uid } from './util';
 
 type Listener = (event: string, payload: Record<string, unknown>) => void;
 
-interface Transport {
-  call(cmd: string, args: unknown): Promise<ArrayBuffer>;
-  listen(fn: Listener): void;
-}
-
-const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-export const isDesktop = !!tauri;
-
-function bridgeUrl(): string | null {
-  const q = new URLSearchParams(location.search).get('bridge');
-  return q || null;
-}
-
-async function tauriTransport(): Promise<Transport> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  const { listen } = await import('@tauri-apps/api/event');
-  return {
-    call: (cmd, args) => invoke<ArrayBuffer>('engine', { cmd, args }),
-    listen: (fn) => {
-      void listen<{ event: string; payload: Record<string, unknown> }>('engine-event', (e) => fn(e.payload.event, e.payload.payload));
-    },
-  };
-}
-
-function httpTransport(base: string): Transport {
-  const listeners: Listener[] = [];
-  let polling = false;
-  const poll = async () => {
-    if (polling) return;
-    polling = true;
-    while (listeners.length) {
-      try {
-        const r = await fetch(`${base}/events`);
-        const list = (await r.json()) as { event: string; payload: Record<string, unknown> }[];
-        for (const e of list) listeners.forEach((l) => l(e.event, e.payload));
-      } catch {
-        /* bridge restarting */
-      }
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    polling = false;
-  };
-  return {
-    async call(cmd, args) {
-      const r = await fetch(`${base}/call/${cmd}`, { method: 'POST', body: JSON.stringify(args ?? {}) });
-      if (!r.ok) throw new Error(await r.text());
-      return r.arrayBuffer();
-    },
-    listen(fn) {
-      listeners.push(fn);
-      void poll();
-    },
-  };
-}
-
-let transport: Promise<Transport> | null = null;
+let worker: Worker | null = null;
+let seq = 0;
+const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 const listeners = new Set<Listener>();
 
-function getTransport(): Promise<Transport> {
-  if (!transport) {
-    transport = (async () => {
-      const b = bridgeUrl();
-      const t = tauri ? await tauriTransport() : b ? httpTransport(b) : null;
-      if (!t) throw new Error('데이터 엔진에 연결할 수 없습니다. 데스크톱 앱으로 실행하세요.');
-      t.listen((ev, p) => listeners.forEach((l) => l(ev, p)));
-      return t;
-    })();
+function getWorker(): Worker {
+  if (!worker) {
+    worker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data as { id?: number; ok?: boolean; result?: unknown; error?: string; event?: string; payload?: Record<string, unknown> };
+      if (m.event) {
+        listeners.forEach((l) => l(m.event!, m.payload ?? {}));
+        return;
+      }
+      const p = pending.get(m.id!);
+      if (!p) return;
+      pending.delete(m.id!);
+      if (m.ok) p.resolve(m.result);
+      else p.reject(new Error(m.error));
+    };
+    worker.onerror = (e) => {
+      log(`worker error: ${e.message}`);
+      for (const p of pending.values()) p.reject(new Error(`데이터 엔진 오류: ${e.message}`));
+      pending.clear();
+    };
   }
-  return transport;
+  return worker;
 }
 
-export const hasEngine = !!tauri || !!bridgeUrl();
-
-async function raw(cmd: string, args: unknown = {}): Promise<ArrayBuffer> {
-  const t = await getTransport();
-  try {
-    return await t.call(cmd, args);
-  } catch (e) {
-    throw new Error(typeof e === 'string' ? e : (e as Error).message);
-  }
+function call<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+  const id = ++seq;
+  return new Promise<T>((resolve, reject) => {
+    pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+    getWorker().postMessage({ id, cmd, args });
+  });
 }
 
-async function json<T>(cmd: string, args: unknown = {}): Promise<T> {
-  const buf = await raw(cmd, args);
-  const bytes = new Uint8Array(buf);
-  if (bytes[0] !== 0) throw new Error(`unexpected binary reply for ${cmd}`);
-  return JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as T;
+// ---------- diagnostics: a small in-memory log the user can save ----------
+
+const LOG_MAX = 2000;
+const logLines: string[] = [];
+
+export function log(msg: string) {
+  const line = `${new Date().toISOString()} ${msg}`;
+  logLines.push(line);
+  if (logLines.length > LOG_MAX) logLines.splice(0, logLines.length - LOG_MAX);
+  console.info('[chronos]', msg);
 }
+
+export const logText = () => logLines.join('\n') + '\n';
+
+// ---------- types ----------
 
 export interface CsvPreview {
   delimiter: string;
@@ -109,12 +72,6 @@ export interface CsvPreview {
   estimatedRows: number;
   size: number;
   timeFormat: TimeFormat;
-}
-
-export interface Memory {
-  totalMb: number;
-  availableMb: number;
-  processMb: number;
 }
 
 export interface Win {
@@ -138,7 +95,7 @@ export interface SeriesKey {
 export interface Progress {
   loaded: number;
   total: number;
-  phase: 'parse' | 'index' | 'reprocess';
+  phase: 'parse' | 'index' | 'reprocess' | 'load';
   name?: string;
 }
 
@@ -149,9 +106,24 @@ export interface OpenResult {
   reprocessed: string[];
 }
 
+export interface PeekResult {
+  workspace: unknown;
+  sources: { id: string; name: string; size: number; lastModified: number; rows: number }[];
+}
+
 export interface Job<T> {
   promise: Promise<T>;
   cancel: () => void;
+}
+
+/** Where a workspace file lives: a file the user picked, or the browser's private storage. */
+export type SaveTarget = { handle: FileSystemFileHandle } | { opfs: string };
+
+export interface SaveResult {
+  fileSize: number;
+  written: number;
+  rewrote: boolean;
+  ms: number;
 }
 
 function withJob<T>(run: (job: string) => Promise<T>, onProgress?: (p: Progress) => void): Job<T> {
@@ -161,30 +133,32 @@ function withJob<T>(run: (job: string) => Promise<T>, onProgress?: (p: Progress)
   };
   listeners.add(l);
   const promise = run(job).finally(() => listeners.delete(l));
-  return { promise, cancel: () => void json('cancel', { job }).catch(() => undefined) };
+  return { promise, cancel: () => void call('cancel', { job }).catch(() => undefined) };
 }
 
+/** Largest data the engine can hold (32-bit WebAssembly memory). */
+export const ENGINE_LIMIT = 4 * 1024 ** 3;
+
 export const engine = {
-  appInfo: () => json<{ dataDir: string; logPath: string | null; memory: Memory; launchFiles: string[]; version: string }>('app_info'),
-  memory: () => json<Memory>('memory'),
-  log: (msg: string) => json<boolean>('log', { msg }).catch(() => false),
-  reveal: (path: string) => json<boolean>('reveal', { path }),
-  preview: (path: string, delimiter = '') => json<CsvPreview>('preview', { path, delimiter }),
-  import: (path: string, settings: ImportSettings, onProgress?: (p: Progress) => void, id?: string): Job<SourceInfo> =>
-    withJob((job) => json<SourceInfo>('import', { path, settings, id, job }), onProgress),
-  open: (path: string, onProgress?: (p: Progress) => void): Job<OpenResult> => withJob((job) => json<OpenResult>('open', { path, job }), onProgress),
-  save: (path: string, workspace: unknown, sources: string[]) =>
-    json<{ fileSize: number; written: number; rewrote: boolean; ms: number }>('save', { path, workspace, sources }),
-  remove: (id: string) => json<boolean>('remove', { id }),
-  clear: () => json<boolean>('clear'),
-  stat: (path: string) => json<{ exists: boolean; size?: number; lastModified?: number }>('stat', { path }),
-  sample: () => json<{ path: string }>('sample'),
-  writeFile: (path: string, data: Uint8Array) => json<boolean>('write_file', { path, base64: toBase64(data) }),
-  exportCsv: (path: string, series: (SeriesKey & { label: string; scale: number; offset: number })[], start: number, end: number) =>
-    json<{ rows: number }>('export_csv', { path, series, start, end }),
-  stats: (series: SeriesKey[], start: number, end: number) => json<(Stats | null)[]>('stats', { series, start, end }),
-  values: (series: SeriesKey[], t: number) => json<(number | null)[]>('values', { series, t }),
-  /** Downsampled windows, fetched in slices so no single IPC reply grows past ~8 MB. */
+  info: () => call<{ memoryBytes: number }>('info'),
+  preview: (file: File, delimiter = '') => call<CsvPreview>('preview', { file, delimiter }),
+  import: (file: File, settings: ImportSettings, onProgress?: (p: Progress) => void, id?: string): Job<SourceInfo & { skipped?: number }> =>
+    withJob((job) => call('import', { file, settings, id, job }), onProgress),
+  peek: (file: File) => call<PeekResult>('peek', { file }),
+  /** Load a workspace; `csv` maps source ids to their current CSV (null = known to be gone). */
+  open: (file: File, csv: Record<string, File | null>, onProgress?: (p: Progress) => void): Job<OpenResult> =>
+    withJob((job) => call('open', { file, csv, job }), onProgress),
+  save: (target: SaveTarget, workspace: unknown, sources: string[]) => call<SaveResult>('save', { target, workspace, sources }),
+  opfsFile: (name: string) => call<File | null>('opfs_file', { name }),
+  opfsRemove: (name: string) => call<boolean>('opfs_remove', { name }),
+  remove: (id: string) => call<boolean>('remove', { id }),
+  clear: () => call<boolean>('clear'),
+  sample: () => call<Blob>('sample'),
+  exportCsv: (series: (SeriesKey & { label: string; scale: number; offset: number })[], start: number, end: number) =>
+    call<Blob>('export_csv', { series, start, end }),
+  stats: (series: SeriesKey[], start: number, end: number) => call<(Stats | null)[]>('stats', { series, start, end }),
+  values: (series: SeriesKey[], t: number) => call<(number | null)[]>('values', { series, t }),
+  /** Downsampled windows, fetched in slices so no single reply grows past ~8 MB. */
   async window(series: SeriesKey[], start: number, end: number, maxPoints: number): Promise<(Win | null)[]> {
     const perSeries = 8 * (maxPoints > 0 ? maxPoints : 1_000_000);
     const step = Math.max(1, Math.floor(REPLY_BUDGET / perSeries));
@@ -197,7 +171,8 @@ export const engine = {
 const REPLY_BUDGET = 8 * 1024 * 1024;
 
 async function windowSlice(series: SeriesKey[], start: number, end: number, maxPoints: number): Promise<(Win | null)[]> {
-  const buf = (await raw('window', { series, start, end, maxPoints })).slice(1);
+  const bytes = await call<Uint8Array>('window', { series, start, end, maxPoints });
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   // f64 header [n, base, (len, raw)*n], then per series f32 x-offsets + f32 y
   const n = new Float64Array(buf, 0, 1)[0];
   const head = new Float64Array(buf, 0, 2 + n * 2);
@@ -218,12 +193,6 @@ async function windowSlice(series: SeriesKey[], start: number, end: number, maxP
     o += 2 * len;
   }
   return out;
-}
-
-function toBase64(b: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
-  return btoa(s);
 }
 
 export type { ColumnInfo };

@@ -16,19 +16,14 @@ import {
 import { store } from '../store';
 import { actions } from '../actions';
 import { project } from '../project';
-import { engine, isDesktop } from '../engine';
-
-async function setWindowTitle(t: string) {
-  if (!isDesktop) return;
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().setTitle(t).catch(() => undefined);
-}
+import { log, logText } from '../engine';
+import { download, droppedFiles } from '../dialogs';
 import { formatTime } from '../data/time';
 import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
 import { ChartWidget } from './chartWidget';
 import { openCommandPalette, type Command } from './commandPalette';
 import { Explorer } from './explorer';
-import { modal, notice } from './overlays';
+import { modal } from './overlays';
 import { PropertiesPanel } from './properties';
 import { TabBar } from './tabs';
 import { WorksheetView } from './worksheetView';
@@ -177,12 +172,11 @@ export class App {
   }
 
   private updateFileStatus() {
-    const label = project.untitled ? 'Untitled (자동 보관)' : (project.path ?? '');
+    const label = project.untitled ? 'Untitled (자동 보관)' : project.name;
     this.status.file.textContent = `${label}${project.saving ? ' · 저장 중…' : project.dirty ? ' ●' : ''}`;
-    this.status.file.title = project.dirty ? '저장되지 않은 변경 (Ctrl+S)' : project.untitled ? '작업은 앱 데이터 폴더에 자동 보관됩니다. Ctrl+S로 원하는 위치에 저장하세요.' : '';
+    this.status.file.title = project.dirty ? '저장되지 않은 변경 (Ctrl+S)' : project.untitled ? '작업은 브라우저 저장소에 자동 보관됩니다. Ctrl+S로 원하는 위치에 저장하세요.' : '';
     const title = `${project.title}${project.dirty ? ' •' : ''} — Chronos Vault`;
     document.title = title;
-    void setWindowTitle(title);
   }
 
   private updateStatus() {
@@ -232,8 +226,7 @@ export class App {
       { id: 'load', name: '워크스페이스 열기', run: () => void actions.openWorkspace() },
       { id: 'new', name: '새 워크스페이스', run: () => void actions.newWorkspace() },
       { id: 'help', name: '도움말 / 단축키', run: () => this.help() },
-      { id: 'log', name: '진단 로그 파일 위치 열기', run: () => void this.revealLog() },
-      ...(project.path && !project.untitled ? [{ id: 'reveal-ws', name: '워크스페이스 파일 위치 열기', run: () => void engine.reveal(project.path!) }] : []),
+      { id: 'log', name: '진단 로그 저장 (문제 보고용)', run: () => download(new Blob([logText()], { type: 'text/plain' }), 'chronos-log.txt') },
     ];
     const sel = store.ws.selectedWidgetId;
     if (sel && v()?.widget(sel)) {
@@ -254,11 +247,6 @@ export class App {
 
   palette() {
     openCommandPalette(() => this.commands());
-  }
-
-  private async revealLog() {
-    const info = await engine.appInfo();
-    if (info.logPath) await engine.reveal(info.logPath).catch((e: Error) => notice(`${info.logPath}\n${e.message}`, 8000));
   }
 
   private help() {
@@ -287,8 +275,9 @@ export class App {
         'ul',
         { class: 'help-list' },
         h('li', {}, 'CSV를 창에 끌어다 놓거나 CSV 열기(Ctrl+Shift+O)로 불러옵니다. 시간 열·형식·구분자는 자동 감지되며 파일 크기 제한이 없습니다.'),
-        h('li', {}, '워크스페이스(.chronos)에는 레이아웃, CSV 경로(절대 + 워크스페이스 기준 상대), 전처리 결과(파싱된 값 + 인덱스)가 함께 저장됩니다. 다시 열면 CSV가 그대로면 저장된 전처리를 바로 쓰고, 바뀌었으면 같은 설정으로 자동 재처리합니다.'),
-        h('li', {}, '저장하기 전의 작업은 "Untitled"로 앱 데이터 폴더에 자동 보관되어, 다음 실행 때 그대로 복원됩니다. .chronos 파일을 더블클릭해도 열립니다.'),
+        h('li', {}, '워크스페이스(.chronos)에는 레이아웃과 전처리 결과(파싱된 값 + 인덱스)가 함께 저장되어, 다시 열면 CSV 없이도 바로 보입니다. 브라우저가 원본 CSV 접근을 허용하면(버튼 한 번) 바뀐 CSV는 같은 설정으로 자동 재처리합니다.'),
+        h('li', {}, '저장하기 전의 작업은 "Untitled"로 브라우저 저장소에 자동 보관되어, 다음 방문 때 그대로 복원됩니다. .chronos 파일을 창에 끌어다 놓아도 열립니다.'),
+        h('li', {}, '탐색기와 CSV 가져오기 창의 열 검색은 정규식입니다 (예: temp|press, ^tag_00[1-3]). 가져오기 창의 모두 선택/해제는 검색된 열에만 적용됩니다.'),
         h('li', {}, '탐색기에서 열(시리즈)을 위젯 위로 끌면 추가, 빈 공간으로 끌면 새 위젯이 생성됩니다. Ctrl/Shift로 다중 선택.'),
         h('li', {}, '범례 행을 다른 위젯으로 끌면 시리즈가 이동합니다 (Alt/Ctrl 누르면 복사).'),
         h('li', {}, '위젯 헤더를 끌어 배치를, 모서리를 끌어 크기를 조절합니다.'),
@@ -362,18 +351,35 @@ export class App {
     });
   }
 
-  /** OS file drops: the desktop webview reports real paths. */
+  /** Files dropped onto the window (with handles in Chrome/Edge, so they can be re-read later). */
   private bindFileDrop() {
-    if (!isDesktop) return;
-    void import('@tauri-apps/api/webview').then(({ getCurrentWebview }) =>
-      getCurrentWebview().onDragDropEvent((e) => {
-        const t = e.payload.type;
-        this.root.classList.toggle('is-file-dragging', t === 'enter' || t === 'over');
-        if (t === 'drop') {
-          void engine.log(`file drop: ${e.payload.paths.length} file(s)`);
-          void actions.openDropped(e.payload.paths);
-        }
-      }),
-    );
+    let depth = 0;
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+    window.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      depth++;
+      this.root.classList.add('is-file-dragging');
+    });
+    window.addEventListener('dragleave', (e) => {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) this.root.classList.remove('is-file-dragging');
+    });
+    window.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = 'copy';
+    });
+    window.addEventListener('drop', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      this.root.classList.remove('is-file-dragging');
+      const files = droppedFiles(e.dataTransfer!);
+      void files.then((f) => {
+        log(`file drop: ${f.map((x) => x.file.name).join(', ')}`);
+        return actions.openFiles(f);
+      });
+    });
   }
 }

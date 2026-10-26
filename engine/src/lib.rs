@@ -18,7 +18,9 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::SystemTime;
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -171,6 +173,17 @@ impl Reply {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn now_ms() -> i64 {
+    #[link(wasm_import_module = "env")]
+    extern "C" {
+        fn now() -> f64;
+    }
+    // SAFETY: provided by the JS host (Date.now)
+    unsafe { now() as i64 }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
@@ -180,8 +193,59 @@ fn mtime_ms(m: &std::fs::Metadata) -> i64 {
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
-fn new_token(prefix: &str) -> String {
+pub fn new_token(prefix: &str) -> String {
     format!("{prefix}_{:x}{:x}", now_ms(), COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Index parsed columns (block summaries + overall min/max/mean) into a source.
+pub fn build_source(parsed: csv::Parsed, id: Option<String>, name: String, path: PathBuf, size: u64, mtime: i64, import: ImportSettings) -> Source {
+    let columns: Vec<Column> = parsed
+        .columns
+        .into_par_iter()
+        .map(|(name, values)| {
+            let blocks = build_blocks(&values);
+            let (mut mn, mut mx, mut s, mut n) = (f64::INFINITY, f64::NEG_INFINITY, 0.0, 0u64);
+            for k in 0..blocks.count.len() {
+                if blocks.count[k] == 0 {
+                    continue;
+                }
+                mn = mn.min(blocks.min[k]);
+                mx = mx.max(blocks.max[k]);
+                s += blocks.sum[k];
+                n += blocks.count[k] as u64;
+            }
+            let ok = n > 0;
+            Column { name, values, blocks, min: if ok { mn } else { f64::NAN }, max: if ok { mx } else { f64::NAN }, mean: if ok { s / n as f64 } else { f64::NAN } }
+        })
+        .collect();
+    Source {
+        id: id.unwrap_or_else(|| new_token("src")),
+        name,
+        path,
+        size,
+        mtime,
+        imported_at: now_ms(),
+        import,
+        token: new_token("gen"),
+        time: parsed.time,
+        columns,
+        missing_original: false,
+    }
+}
+
+/// One series of a CSV export.
+#[derive(Deserialize)]
+pub struct ExportItem {
+    pub source: String,
+    pub column: String,
+    pub label: String,
+    #[serde(default = "one")]
+    pub scale: f64,
+    #[serde(default)]
+    pub offset: f64,
+}
+fn one() -> f64 {
+    1.0
 }
 
 #[derive(Deserialize)]
@@ -220,7 +284,7 @@ impl Engine {
         }
     }
 
-    fn get(&self, id: &str) -> Result<Arc<Source>, Error> {
+    pub fn get(&self, id: &str) -> Result<Arc<Source>, Error> {
         self.sources.read().unwrap().get(id).cloned().ok_or_else(|| Error::msg(format!("데이터 소스 {id} 이(가) 로드되지 않았습니다.")))
     }
 
@@ -252,41 +316,13 @@ impl Engine {
         self.jobs.lock().unwrap().remove(job);
         let parsed = parsed?;
         emit("progress", json!({ "job": job, "loaded": total, "total": total, "phase": "index" }));
-        let columns: Vec<Column> = parsed
-            .columns
-            .into_par_iter()
-            .map(|(name, values)| {
-                let blocks = build_blocks(&values);
-                let (mut mn, mut mx, mut s, mut n) = (f64::INFINITY, f64::NEG_INFINITY, 0.0, 0u64);
-                for k in 0..blocks.count.len() {
-                    if blocks.count[k] == 0 {
-                        continue;
-                    }
-                    mn = mn.min(blocks.min[k]);
-                    mx = mx.max(blocks.max[k]);
-                    s += blocks.sum[k];
-                    n += blocks.count[k] as u64;
-                }
-                let ok = n > 0;
-                Column { name, values, blocks, min: if ok { mn } else { f64::NAN }, max: if ok { mx } else { f64::NAN }, mean: if ok { s / n as f64 } else { f64::NAN } }
-            })
-            .collect();
-        let src = Arc::new(Source {
-            id: id.unwrap_or_else(|| new_token("src")),
-            name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            path: std::fs::canonicalize(path).map(strip_unc).unwrap_or_else(|_| path.to_path_buf()),
-            size: total,
-            mtime: mtime_ms(&meta),
-            imported_at: now_ms(),
-            import: settings.clone(),
-            token: new_token("gen"),
-            time: parsed.time,
-            columns,
-            missing_original: false,
-        });
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let real = std::fs::canonicalize(path).map(strip_unc).unwrap_or_else(|_| path.to_path_buf());
+        let skipped = parsed.skipped;
+        let src = Arc::new(build_source(parsed, id, name, real, total, mtime_ms(&meta), settings.clone()));
         let msg = format!("import {}: {} rows x {} cols, {:.0} MB in memory, {:.2}s", src.name, src.time.len(), src.columns.len(), src.byte_len() as f64 / 1e6, t0.elapsed().as_secs_f64());
         self.log(&msg);
-        emit("log", json!({ "msg": msg, "skipped": parsed.skipped }));
+        emit("log", json!({ "msg": msg, "skipped": skipped }));
         self.sources.write().unwrap().insert(src.id.clone(), src.clone());
         Ok(src)
     }
@@ -336,6 +372,50 @@ impl Engine {
             self.sources.write().unwrap().insert(src.id.clone(), Arc::new(src));
         }
         Ok(json!({ "workspace": header.workspace, "sources": loaded, "notes": notes, "reprocessed": reprocessed, "savedAt": header.saved_at }))
+    }
+
+    pub fn insert(&self, src: Source) -> Arc<Source> {
+        let src = Arc::new(src);
+        self.sources.write().unwrap().insert(src.id.clone(), src.clone());
+        src
+    }
+
+    /// Loaded sources (only `keep`, when given), sorted by id.
+    pub fn snapshot(&self, keep: Option<&[String]>) -> Vec<Arc<Source>> {
+        let mut all: Vec<Arc<Source>> = self.sources.read().unwrap().values().filter(|s| keep.is_none_or(|k| k.contains(&s.id))).cloned().collect();
+        all.sort_by(|a, b| a.id.cmp(&b.id));
+        all
+    }
+
+    /// Merge the series on their union of timestamps within [start, end] as CSV.
+    pub fn export_csv(&self, items: &[ExportItem], start: f64, end: f64, w: &mut dyn Write) -> Result<usize, Error> {
+        let srcs: Vec<(Arc<Source>, &ExportItem)> = items.iter().filter_map(|it| self.get(&it.source).ok().map(|s| (s, it))).collect();
+        let mut stamps: Vec<f64> = srcs
+            .iter()
+            .flat_map(|(s, _)| {
+                let a = lower_bound(&s.time, start);
+                let b = s.time.partition_point(|&x| x <= end);
+                s.time[a..b.max(a)].to_vec()
+            })
+            .collect();
+        stamps.par_sort_by(f64::total_cmp);
+        stamps.dedup();
+        let esc = |v: &str| if v.contains([',', '"', '\n']) { format!("\"{}\"", v.replace('"', "\"\"")) } else { v.to_string() };
+        write!(w, "timestamp")?;
+        for (_, it) in &srcs {
+            write!(w, ",{}", esc(&it.label))?;
+        }
+        writeln!(w)?;
+        for &t in &stamps {
+            write!(w, "{}", fmt_time(t))?;
+            for (s, it) in &srcs {
+                let k = lower_bound(&s.time, t);
+                let v = if k < s.time.len() && s.time[k] == t { s.column(&it.column).map(|c| c.values.get(k)).unwrap_or(f64::NAN) } else { f64::NAN };
+                if v.is_nan() { write!(w, ",")? } else { write!(w, ",{}", v * it.scale + it.offset)? }
+            }
+            writeln!(w)?;
+        }
+        Ok(stamps.len())
     }
 
     /// Dispatch one command. `emit` receives progress events.
@@ -432,15 +512,7 @@ impl Engine {
                 let path = PathBuf::from(need("path")?);
                 // only the sources the workspace uses (when the UI says which)
                 let keep: Option<Vec<String>> = args.get("sources").and_then(|v| serde_json::from_value(v.clone()).ok());
-                let mut all: Vec<Arc<Source>> = self
-                    .sources
-                    .read()
-                    .unwrap()
-                    .values()
-                    .filter(|s| keep.as_ref().is_none_or(|k| k.contains(&s.id)))
-                    .cloned()
-                    .collect();
-                all.sort_by(|a, b| a.id.cmp(&b.id));
+                let all = self.snapshot(keep.as_deref());
                 let t0 = std::time::Instant::now();
                 let rep = chronos::save(&path, args.get("workspace").cloned().unwrap_or(Value::Null), &all, now_ms())?;
                 self.log(&format!("save {}: {} MB file, {} MB written, {} ms", path.display(), rep.file_size >> 20, rep.written >> 20, t0.elapsed().as_millis()));
@@ -468,50 +540,11 @@ impl Engine {
                 })
             }
             "export_csv" => {
-                #[derive(Deserialize)]
-                struct Item {
-                    source: String,
-                    column: String,
-                    label: String,
-                    #[serde(default = "one")]
-                    scale: f64,
-                    #[serde(default)]
-                    offset: f64,
-                }
-                fn one() -> f64 {
-                    1.0
-                }
-                let items: Vec<Item> = serde_json::from_value(args.get("series").cloned().unwrap_or(json!([])))?;
-                let (start, end) = (f("start"), f("end"));
-                let srcs: Vec<(Arc<Source>, &Item)> = items.iter().filter_map(|it| self.get(&it.source).ok().map(|s| (s, it))).collect();
-                let mut stamps: Vec<f64> = srcs
-                    .iter()
-                    .flat_map(|(s, _)| {
-                        let a = lower_bound(&s.time, start);
-                        let b = s.time.partition_point(|&x| x <= end);
-                        s.time[a..b.max(a)].to_vec()
-                    })
-                    .collect();
-                stamps.par_sort_by(f64::total_cmp);
-                stamps.dedup();
+                let items: Vec<ExportItem> = serde_json::from_value(args.get("series").cloned().unwrap_or(json!([])))?;
                 let mut w = BufWriter::new(File::create(need("path")?)?);
-                let esc = |v: &str| if v.contains([',', '"', '\n']) { format!("\"{}\"", v.replace('"', "\"\"")) } else { v.to_string() };
-                write!(w, "timestamp")?;
-                for (_, it) in &srcs {
-                    write!(w, ",{}", esc(&it.label))?;
-                }
-                writeln!(w)?;
-                for &t in &stamps {
-                    write!(w, "{}", fmt_time(t))?;
-                    for (s, it) in &srcs {
-                        let k = lower_bound(&s.time, t);
-                        let v = if k < s.time.len() && s.time[k] == t { s.column(&it.column).map(|c| c.values.get(k)).unwrap_or(f64::NAN) } else { f64::NAN };
-                        if v.is_nan() { write!(w, ",")? } else { write!(w, ",{}", v * it.scale + it.offset)? }
-                    }
-                    writeln!(w)?;
-                }
+                let rows = self.export_csv(&items, f("start"), f("end"), &mut w)?;
                 w.flush()?;
-                Reply::Json(json!({ "rows": stamps.len() }))
+                Reply::Json(json!({ "rows": rows }))
             }
             "app_info" => Reply::Json(json!({
                 "dataDir": self.data_dir.to_string_lossy(),
@@ -542,6 +575,12 @@ impl Engine {
 /// Synthetic multi-sensor CSV (50k rows at 1 min) for the "sample data" action.
 fn write_sample(p: &Path) -> std::io::Result<()> {
     let mut w = BufWriter::new(File::create(p)?);
+    sample_csv(&mut w)?;
+    w.flush()
+}
+
+/// Synthetic multi-sensor CSV (50k rows at 1 min).
+pub fn sample_csv(w: &mut dyn Write) -> std::io::Result<()> {
     writeln!(w, "timestamp,cpu_load,memory_mb,temperature_c,network_rx_kbps,network_tx_kbps,disk_iops,pressure_hpa")?;
     let start = 1_767_225_600_000f64; // 2026-01-01
     let (mut mem, mut temp, mut pressure, mut seed) = (4200f64, 42f64, 1013f64, 7u64);
@@ -567,7 +606,7 @@ fn write_sample(p: &Path) -> std::io::Result<()> {
         let ts = fmt_time(start + i as f64 * 60_000.0);
         writeln!(w, "{},{cpu:.2},{mem:.1},{temp:.2},{rx:.1},{tx:.1},{iops},{pressure:.2}", &ts[..19])?;
     }
-    w.flush()
+    Ok(())
 }
 
 /// `\\?\C:\x` → `C:\x` (canonicalize on Windows returns verbatim paths).

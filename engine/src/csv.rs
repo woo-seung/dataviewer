@@ -134,12 +134,20 @@ fn skip_bom(b: &[u8]) -> &[u8] {
     b.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(b)
 }
 
+/// Bytes read for a preview (the start of the file).
+pub const PREVIEW_BYTES: usize = 256 * 1024;
+
 pub fn preview(path: &Path, delimiter: Option<&str>) -> Result<Preview, Error> {
     let mut f = File::open(path)?;
     let size = f.metadata()?.len();
-    let mut buf = vec![0u8; size.min(256 * 1024) as usize];
+    let mut buf = vec![0u8; size.min(PREVIEW_BYTES as u64) as usize];
     f.read_exact(&mut buf)?;
-    let text = skip_bom(&buf);
+    preview_bytes(&buf, size, delimiter)
+}
+
+/// Detect layout from the first bytes of a file of `size` bytes.
+pub fn preview_bytes(buf: &[u8], size: u64, delimiter: Option<&str>) -> Result<Preview, Error> {
+    let text = skip_bom(buf);
     let lines: Vec<&[u8]> = text.split(|&c| c == b'\n').filter(|l| !l.iter().all(|c| c.is_ascii_whitespace())).take(61).collect();
     if lines.is_empty() {
         return Err(Error::msg("파일이 비어 있습니다."));
@@ -207,7 +215,7 @@ pub fn preview(path: &Path, delimiter: Option<&str>) -> Result<Preview, Error> {
         .collect();
     let tc = colv(time_column);
     let tcs: Vec<&[u8]> = tc.iter().map(|v| v.as_slice()).collect();
-    let nl = memchr_iter(b'\n', &buf).count() as u64;
+    let nl = memchr_iter(b'\n', buf).count() as u64;
     let estimated_rows = if buf.len() as u64 >= size { nl + 1 } else { ((nl as f64 / buf.len() as f64) * size as f64) as u64 };
     Ok(Preview {
         delimiter: (delim as char).to_string(),
@@ -234,6 +242,7 @@ pub struct Progress<'a> {
     pub cancel: &'a AtomicBool,
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 trait Store: Copy + Send + Sync + 'static {
     const NAN: Self;
     fn from(v: f64) -> Self;
@@ -445,6 +454,7 @@ fn parse_quoted<T: Store>(body: &[u8], l: &Layout, p: &Progress) -> Result<(Vec<
 }
 
 /// Drop rows without a valid timestamp, in place.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn compact<T: Store>(time: &mut Vec<f64>, cols: &mut [Vec<T>]) -> u64 {
     let mut w = 0usize;
     for r in 0..time.len() {
@@ -478,6 +488,7 @@ fn sort_by_time<T: Store>(time: &mut Vec<f64>, cols: &mut [Vec<T>]) {
     cols.par_iter_mut().for_each(|c| *c = idx.iter().map(|&i| c[i as usize]).collect());
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn run<T: Store>(body: &[u8], l: &Layout, p: &Progress, names: Vec<String>) -> Result<Parsed, Error> {
     let quoted = memchr::memchr(b'"', body).is_some();
     let (mut time, mut cols) = if quoted { parse_quoted::<T>(body, l, p)? } else { parse_parallel::<T>(body, l, p)? };
@@ -486,17 +497,9 @@ fn run<T: Store>(body: &[u8], l: &Layout, p: &Progress, names: Vec<String>) -> R
     Ok(Parsed { time, columns: names.into_iter().zip(cols.into_iter().map(T::wrap)).collect(), skipped })
 }
 
-pub fn import(path: &Path, s: &ImportSettings, p: &Progress) -> Result<Parsed, Error> {
-    let file = File::open(path)?;
-    if file.metadata()?.len() == 0 {
-        return Err(Error::msg("파일이 비어 있습니다."));
-    }
-    // SAFETY: read-only map; the file may change underneath, which at worst yields odd values.
-    let map = unsafe { memmap2::Mmap::map(&file)? };
-    let data = skip_bom(&map);
+/// Column mapping for the importer, from the first record of the file.
+fn layout_for(first: &[Vec<u8>], s: &ImportSettings) -> Result<(Layout, Vec<String>), Error> {
     let delim = s.delimiter.bytes().next().unwrap_or(b',');
-    let first_end = memchr::memchr(b'\n', data).unwrap_or(data.len());
-    let first = split_record(&data[..first_end], delim);
     let header: Vec<String> = first
         .iter()
         .enumerate()
@@ -520,13 +523,209 @@ pub fn import(path: &Path, s: &ImportSettings, p: &Progress) -> Result<Parsed, E
     if names.is_empty() {
         return Err(Error::msg("가져올 열을 찾을 수 없습니다."));
     }
+    Ok((Layout { delim, time_field, slots: names.len(), slot_of, fmt: s.time_format, decimal_comma: delim != b',' }, names))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn import(path: &Path, s: &ImportSettings, p: &Progress) -> Result<Parsed, Error> {
+    let file = File::open(path)?;
+    if file.metadata()?.len() == 0 {
+        return Err(Error::msg("파일이 비어 있습니다."));
+    }
+    // SAFETY: read-only map; the file may change underneath, which at worst yields odd values.
+    let map = unsafe { memmap2::Mmap::map(&file)? };
+    let data = skip_bom(&map);
+    let delim = s.delimiter.bytes().next().unwrap_or(b',');
+    let first_end = memchr::memchr(b'\n', data).unwrap_or(data.len());
+    let (l, names) = layout_for(&split_record(&data[..first_end], delim), s)?;
     let body = if s.has_header { &data[(first_end + 1).min(data.len())..] } else { data };
-    let l = Layout { delim, time_field, slots: names.len(), slot_of, fmt: s.time_format, decimal_comma: delim != b',' };
     let parsed = if s.compact { run::<f32>(body, &l, p, names)? } else { run::<f64>(body, &l, p, names)? };
     if parsed.time.is_empty() {
-        return Err(Error::msg("유효한 타임스탬프가 있는 행이 없습니다. 시간 열/형식을 확인하세요."));
+        return Err(Error::msg(NO_ROWS));
     }
     Ok(parsed)
+}
+
+/// The browser build reads files through [`StreamImport`] instead.
+#[cfg(target_arch = "wasm32")]
+pub fn import(_: &Path, _: &ImportSettings, _: &Progress) -> Result<Parsed, Error> {
+    Err(Error::msg("unsupported"))
+}
+
+const NO_ROWS: &str = "유효한 타임스탬프가 있는 행이 없습니다. 시간 열/형식을 확인하세요.";
+
+enum Cols {
+    F64(Vec<Vec<f64>>),
+    F32(Vec<Vec<f32>>),
+}
+
+/// Incremental importer for callers that read the file in pieces (the browser):
+/// feed chunks in order, then `finish`. Rows are parsed as soon as a complete
+/// record is available, so memory holds the parsed columns plus one chunk.
+pub struct StreamImport {
+    settings: ImportSettings,
+    total: u64,
+    fed: u64,
+    buf: Vec<u8>,
+    started: bool,
+    layout: Option<(Layout, Vec<String>)>,
+    time: Vec<f64>,
+    cols: Option<Cols>,
+    skipped: u64,
+    reserved: bool,
+}
+
+/// End of the last complete record in `b` (just past its newline), honouring quotes.
+fn record_boundary(b: &[u8]) -> usize {
+    if memchr::memchr(b'"', b).is_none() {
+        return memchr::memrchr(b'\n', b).map_or(0, |p| p + 1);
+    }
+    let mut q = false;
+    let mut last = 0;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'"' => q = !q,
+            b'\n' if !q => last = i + 1,
+            _ => {}
+        }
+    }
+    last
+}
+
+/// End of the first record (just past its newline), honouring quotes.
+fn first_record_end(b: &[u8]) -> usize {
+    let mut q = false;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'"' => q = !q,
+            b'\n' if !q => return i + 1,
+            _ => {}
+        }
+    }
+    b.len()
+}
+
+fn append<T: Store>(time: &mut Vec<f64>, cols: &mut [Vec<T>], t: Vec<f64>, c: Vec<Vec<T>>) -> u64 {
+    let keep: Vec<bool> = t.iter().map(|v| !v.is_nan()).collect();
+    let skipped = keep.iter().filter(|k| !**k).count() as u64;
+    // column by column: one sequential pass per destination vector
+    if skipped == 0 {
+        time.extend_from_slice(&t);
+        for (dst, src) in cols.iter_mut().zip(&c) {
+            dst.extend_from_slice(src);
+        }
+    } else {
+        time.extend(t.iter().zip(&keep).filter(|(_, k)| **k).map(|(v, _)| *v));
+        for (dst, src) in cols.iter_mut().zip(&c) {
+            dst.extend(src.iter().zip(&keep).filter(|(_, k)| **k).map(|(v, _)| *v));
+        }
+    }
+    skipped
+}
+
+impl StreamImport {
+    pub fn new(settings: ImportSettings, total: u64) -> Self {
+        StreamImport { settings, total, fed: 0, buf: Vec::new(), started: false, layout: None, time: Vec::new(), cols: None, skipped: 0, reserved: false }
+    }
+
+    pub fn fed(&self) -> u64 {
+        self.fed
+    }
+
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), Error> {
+        self.fed += chunk.len() as u64;
+        if !self.started {
+            self.started = true;
+            self.buf.extend_from_slice(skip_bom(chunk));
+        } else {
+            self.buf.extend_from_slice(chunk);
+        }
+        self.process(false)
+    }
+
+    fn process(&mut self, last: bool) -> Result<(), Error> {
+        let mut cut = if last { self.buf.len() } else { record_boundary(&self.buf) };
+        if cut == 0 {
+            return Ok(());
+        }
+        let mut from = 0;
+        if self.layout.is_none() {
+            let delim = self.settings.delimiter.bytes().next().unwrap_or(b',');
+            let first_end = first_record_end(&self.buf[..cut]);
+            let rec = &self.buf[..first_end];
+            let rec = rec.strip_suffix(b"\n").unwrap_or(rec);
+            let (l, names) = layout_for(&split_record(rec, delim), &self.settings)?;
+            self.cols = Some(if self.settings.compact { Cols::F32(vec![Vec::new(); names.len()]) } else { Cols::F64(vec![Vec::new(); names.len()]) });
+            self.layout = Some((l, names));
+            if self.settings.has_header {
+                from = first_end;
+            }
+        }
+        if cut < from {
+            cut = from;
+        }
+        let body = &self.buf[from..cut];
+        if !body.is_empty() {
+            let (l, _) = self.layout.as_ref().unwrap();
+            let (bytes, cancel) = (AtomicU64::new(0), AtomicBool::new(false));
+            let p = Progress { bytes: &bytes, cancel: &cancel };
+            let quoted = memchr::memchr(b'"', body).is_some();
+            let rows_before = self.time.len();
+            match self.cols.as_mut().unwrap() {
+                Cols::F64(c) => {
+                    let (t, v) = if quoted { parse_quoted::<f64>(body, l, &p)? } else { parse_parallel::<f64>(body, l, &p)? };
+                    if !self.reserved {
+                        reserve(&mut self.time, c, t.len(), body.len(), self.total);
+                    }
+                    self.skipped += append(&mut self.time, c, t, v);
+                }
+                Cols::F32(c) => {
+                    let (t, v) = if quoted { parse_quoted::<f32>(body, l, &p)? } else { parse_parallel::<f32>(body, l, &p)? };
+                    if !self.reserved {
+                        reserve(&mut self.time, c, t.len(), body.len(), self.total);
+                    }
+                    self.skipped += append(&mut self.time, c, t, v);
+                }
+            }
+            self.reserved = self.reserved || self.time.len() > rows_before;
+        }
+        self.buf.drain(..cut);
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<Parsed, Error> {
+        if !self.buf.is_empty() {
+            self.process(true)?;
+        }
+        let Some((_, names)) = self.layout.take() else { return Err(Error::msg("파일이 비어 있습니다.")) };
+        let mut time = self.time;
+        let columns = match self.cols.take().unwrap() {
+            Cols::F64(mut c) => {
+                sort_by_time(&mut time, &mut c);
+                names.into_iter().zip(c.into_iter().map(Values::F64)).collect()
+            }
+            Cols::F32(mut c) => {
+                sort_by_time(&mut time, &mut c);
+                names.into_iter().zip(c.into_iter().map(Values::F32)).collect()
+            }
+        };
+        if time.is_empty() {
+            return Err(Error::msg(NO_ROWS));
+        }
+        Ok(Parsed { time, columns, skipped: self.skipped })
+    }
+}
+
+/// Size the column vectors once from the first chunk's rows-per-byte.
+fn reserve<T>(time: &mut Vec<f64>, cols: &mut [Vec<T>], rows: usize, bytes: usize, total: u64) {
+    if rows == 0 || bytes == 0 {
+        return;
+    }
+    let est = ((rows as f64 / bytes as f64) * total as f64 * 1.02) as usize + 16;
+    time.reserve(est);
+    for c in cols.iter_mut() {
+        c.reserve(est);
+    }
 }
 
 #[cfg(test)]
@@ -573,6 +772,34 @@ mod tests {
         assert_eq!(r.columns[0].1.get(5), 5.0);
         assert!(r.columns[1].1.get(7).is_nan());
         assert_eq!(r.columns[1].1.get(8), 16.0);
+    }
+
+    #[test]
+    fn stream_import_matches_whole_file() {
+        let mut s = String::from("\u{feff}time,a,\"b\"\n");
+        for i in (0..50_000).rev() {
+            if i % 1000 == 0 {
+                s.push_str(&format!("\"{}\",\"{},5\",{}\n", 1_700_000_000 + i, i, i * 3));
+            } else {
+                s.push_str(&format!("{},{},{}\r\n", 1_700_000_000 + i, i, i * 3));
+            }
+        }
+        s.push_str("bad,1,2");
+        let set = ImportSettings { delimiter: ",".into(), has_header: true, time_column: "time".into(), time_format: TimeFormat::EpochS, columns: vec!["a".into(), "b".into()], compact: true };
+        let bytes = s.as_bytes();
+        for step in [7usize, 4096, 1 << 20] {
+            let mut st = StreamImport::new(set.clone(), bytes.len() as u64);
+            for c in bytes.chunks(step) {
+                st.feed(c).unwrap();
+            }
+            let r = st.finish().unwrap();
+            assert_eq!(r.time.len(), 50_000, "step {step}");
+            assert_eq!(r.skipped, 1);
+            assert!(r.time.windows(2).all(|w| w[0] < w[1]));
+            assert_eq!(r.columns[1].1.get(10), 30.0);
+            assert!(r.columns[0].1.get(1000).is_nan(), "quoted '1000,5' is not a number with ',' delimiter");
+            assert_eq!(r.columns[1].1.get(1000), 3000.0);
+        }
     }
 
     #[test]

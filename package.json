@@ -1,17 +1,17 @@
 {
   "name": "chronos-vault",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "npm run wasm && vite",
+    "build": "npm run wasm && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "app:dev": "tauri dev",
     "app:build": "tauri build",
     "app:build:win": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc",
-    "bridge": "cargo run --release -p chronos-engine-bridge"
+    "wasm": "node scripts/build-wasm.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",

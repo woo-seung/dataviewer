@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["engine", "engine-bridge", "src-tauri"]
+members = ["engine-wasm", "engine", "engine-bridge", "src-tauri"]
 
 [profile.release]
 opt-level = 3
