@@ -12,6 +12,7 @@ import {
   Sun,
   Files,
   LayoutDashboard,
+  MessageSquare,
 } from 'lucide';
 import { store } from '../store';
 import { actions } from '../actions';
@@ -27,6 +28,7 @@ import { modal } from './overlays';
 import { arrangeMenu, swapWithNeighbor } from './arrange';
 import type { Side } from '../layout';
 import { PropertiesPanel } from './properties';
+import { AnnotationsPanel } from './annotationsPanel';
 import { TabBar } from './tabs';
 import { WorksheetView } from './worksheetView';
 
@@ -48,6 +50,7 @@ export class App {
   constructor(mount: HTMLElement) {
     const explorer = new Explorer();
     const props = new PropertiesPanel();
+    const annos = new AnnotationsPanel();
     props.getView = () => this.view;
     const tabs = new TabBar();
 
@@ -90,8 +93,8 @@ export class App {
       'div',
       { class: 'workspace-split mod-right-split' },
       this.resizer('right'),
-      sideHeader(SlidersHorizontal, '속성', () => actions.toggleRight(), 'right'),
-      h('div', { class: 'workspace-leaf-content' }, props.el),
+      this.rightHeader(props.el, annos.el),
+      h('div', { class: 'workspace-leaf-content' }, props.el, annos.el),
     );
     this.leafHost = h('div', { class: 'workspace-tabs-content' });
     const rightToggle = iconButton(PanelRight, '오른쪽 사이드바 (Ctrl+])', () => actions.toggleRight(), 'clickable-icon tab-bar-right-toggle');
@@ -197,6 +200,44 @@ export class App {
     this.status.render.textContent = this.renderStats.size ? `렌더 ${formatCount(raw)} → ${formatCount(shown)} pts · ${ms.toFixed(0)} ms` : '';
   }
 
+  /** Right sidebar tabs: properties | annotations (with a count). */
+  private rightHeader(propsEl: HTMLElement, annosEl: HTMLElement) {
+    const tab = (ic: Parameters<typeof icon>[0], label: string) => {
+      const count = h('span', { class: 'side-tab-count' });
+      const el = h('div', { class: 'workspace-tab-header side-tab', role: 'tab' }, h('div', { class: 'workspace-tab-header-inner' }, icon(ic, 16), h('span', { class: 'sidebar-tab-label' }, label), count));
+      return { el, count };
+    };
+    const p = tab(SlidersHorizontal, '속성');
+    const a = tab(MessageSquare, '주석');
+    const show = (which: 'props' | 'annotations', persist = true) => {
+      p.el.classList.toggle('is-active', which === 'props');
+      a.el.classList.toggle('is-active', which === 'annotations');
+      propsEl.hidden = which !== 'props';
+      annosEl.hidden = which !== 'annotations';
+      if (persist && store.ws.settings.rightTab !== which) {
+        store.ws.settings.rightTab = which;
+        store.save();
+      }
+    };
+    p.el.addEventListener('click', () => show('props'));
+    a.el.addEventListener('click', () => show('annotations'));
+    const counts = () => (a.count.textContent = store.annotations.length ? String(store.annotations.length) : '');
+    store.on('annotations', counts);
+    store.on('settings', () => show(store.ws.settings.rightTab ?? 'props', false));
+    // a new note (or one opened from a chart) shows the list
+    store.on('annotating', () => store.focusedAnnotation && show('annotations'));
+    counts();
+    show(store.ws.settings.rightTab ?? 'props', false);
+    return h(
+      'div',
+      { class: 'workspace-tab-header-container mod-sidebar mod-tabs' },
+      p.el,
+      a.el,
+      h('div', { class: 'workspace-tab-header-spacer' }),
+      iconButton(PanelRight, '사이드바 닫기', () => actions.toggleRight()),
+    );
+  }
+
   commands(): Command[] {
     const v = () => this.view;
     const ws = () => store.active.id;
@@ -207,6 +248,7 @@ export class App {
       { id: 'dup-ws', name: '현재 워크시트 복제', run: () => store.duplicateWorksheet(ws()) },
       { id: 'close-ws', name: '현재 워크시트 닫기', run: () => store.removeWorksheet(ws()) },
       { id: 'add-widget', name: '빈 차트 위젯 추가', run: () => store.addWidget(ws()) },
+      { id: 'annotate', name: '주석 달기 (그래프 클릭 = 포인트, 드래그 = 구간)', hotkey: 'N', run: () => store.setAnnotating(true) },
       ...arrangeMenu(ws(), store.ws.selectedWidgetId && store.widget(ws(), store.ws.selectedWidgetId) ? store.ws.selectedWidgetId : null)
         .filter((m) => !m.separator && !m.disabled)
         .map((m, i) => ({ id: `arrange-${i}`, name: `정렬: ${m.title}`, hotkey: m.hint, run: () => m.onClick?.() })),
@@ -269,6 +311,7 @@ export class App {
       ['A', '전체 보기'],
       ['Alt+← / Alt+→', '줌 기록 뒤로 / 앞으로'],
       ['Alt+Shift+방향키', '선택 위젯을 그쪽 위젯과 자리 바꾸기'],
+      ['N', '주석 모드 (그래프 클릭 = 포인트, 드래그 = 구간) · Esc 취소'],
       ['Ctrl+클릭 (범례)', '그 시리즈만 보기 / 다시 모두 보기'],
       ['F', '선택 위젯 최대화'],
       ['Delete', '선택 위젯 삭제'],
@@ -284,6 +327,7 @@ export class App {
         h('li', {}, 'CSV를 창에 끌어다 놓거나 CSV 열기(Ctrl+Shift+O)로 불러옵니다. 시간 열·형식·구분자는 자동 감지되며 파일 크기 제한이 없습니다.'),
         h('li', {}, '워크스페이스(.chronos)에는 레이아웃과 전처리 결과(파싱된 값 + 인덱스)가 함께 저장되어, 다시 열면 CSV 없이도 바로 보입니다. 브라우저가 원본 CSV 접근을 허용하면(버튼 한 번) 바뀐 CSV는 같은 설정으로 자동 재처리합니다.'),
         h('li', {}, '저장하기 전의 작업은 "Untitled"로 브라우저 저장소에 자동 보관되어, 다음 방문 때 그대로 복원됩니다. .chronos 파일을 창에 끌어다 놓아도 열립니다.'),
+        h('li', {}, '주석: N(또는 툴바의 주석 버튼)을 누른 뒤 그래프를 클릭하면 그 시점에, 드래그하면 그 구간에 주석이 달립니다. 메모와 그 시점의 데이터, 당시 화면(시간 범위·Y축 확대·보이던 시리즈)이 저장되고, 오른쪽 사이드바의 주석 탭에서 항목을 클릭하면 그 화면으로 돌아갑니다.'),
         h('li', {}, '탐색기와 CSV 가져오기 창의 열 검색은 정규식입니다 (예: temp|press, ^tag_00[1-3]). 가져오기 창의 모두 선택/해제는 검색된 열에만 적용됩니다.'),
         h('li', {}, '탐색기에서 열(시리즈)을 차트 가운데로 끌면 그 차트에 추가, 가장자리로 끌면 그쪽에 새 차트 타일이 생깁니다. Ctrl/Shift로 다중 선택.'),
         h('li', {}, '범례 행을 다른 위젯으로 끌면 시리즈가 이동합니다 (Alt/Ctrl 누르면 복사).'),
@@ -352,6 +396,8 @@ export class App {
       else if (e.key === 'a' || e.key === 'A') v?.applyPreset(null);
       else if ((e.key === 'f' || e.key === 'F') && sel) v?.widget(sel)?.toggleMaximize();
       else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) store.removeWidget(ws, sel);
+      else if (e.key === 'n' || e.key === 'N') store.setAnnotating(!store.annotating);
+      else if (e.key === 'Escape' && store.annotating) store.setAnnotating(false);
       else if (e.key === 'Escape') {
         const w = sel ? v?.widget(sel) : null;
         if (w?.isMaximized) w.toggleMaximize();

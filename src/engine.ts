@@ -158,6 +158,8 @@ export const engine = {
     call<Blob>('export_csv', { series, start, end }),
   stats: (series: SeriesKey[], start: number, end: number) => call<(Stats | null)[]>('stats', { series, start, end }),
   values: (series: SeriesKey[], t: number) => call<(number | null)[]>('values', { series, t }),
+  /** Time of the sample nearest to t, per series. */
+  times: (series: SeriesKey[], t: number) => call<(number | null)[]>('times', { series, t }),
   /** Downsampled windows, fetched in slices so no single reply grows past ~8 MB. */
   async window(series: SeriesKey[], start: number, end: number, maxPoints: number): Promise<(Win | null)[]> {
     const perSeries = 8 * (maxPoints > 0 ? maxPoints : 1_000_000);

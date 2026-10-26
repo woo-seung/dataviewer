@@ -508,6 +508,15 @@ impl Engine {
                     .collect();
                 Reply::Json(json!(out))
             }
+            "times" => {
+                // timestamp of the sample nearest to t, per series (annotations snap to it)
+                let t = f("t");
+                let out: Vec<Value> = series()?
+                    .iter()
+                    .map(|r| self.get(&r.source).ok().and_then(|src| nearest(&src.time, t).map(|i| src.time[i])).map_or(Value::Null, |x| json!(x)))
+                    .collect();
+                Reply::Json(json!(out))
+            }
             "save" => {
                 let path = PathBuf::from(need("path")?);
                 // only the sources the workspace uses (when the UI says which)

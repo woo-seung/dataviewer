@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Hand,
   LayoutDashboard,
+  MessageSquarePlus,
   Maximize,
   Plus,
   Sparkles,
@@ -54,6 +55,8 @@ export class WorksheetView {
   private backBtn: HTMLButtonElement;
   private fwdBtn: HTMLButtonElement;
   private crossBtn: HTMLButtonElement;
+  private annoBtn: HTMLButtonElement;
+  private annoBar: HTMLElement;
   private dragBtn: HTMLButtonElement;
   private durLabel: HTMLElement;
   private emptyState: HTMLElement;
@@ -89,6 +92,7 @@ export class WorksheetView {
       ),
     );
 
+    this.annoBtn = iconButton(MessageSquarePlus, '주석 달기 (N) — 그래프를 클릭하면 포인트, 드래그하면 구간', () => store.setAnnotating(!store.annotating));
     const arrangeBtn = h('button', { class: 'toolbar-button', type: 'button', title: '정렬 — 위젯 높이·너비 균등 분배, 자리 바꾸기' }, icon(LayoutDashboard, 15), h('span', {}, '정렬'), icon(ChevronDown, 14));
     arrangeBtn.addEventListener('click', () => {
       const sel = store.ws.selectedWidgetId;
@@ -117,6 +121,7 @@ export class WorksheetView {
       h(
         'div',
         { class: 'view-actions' },
+        this.annoBtn,
         this.crossBtn,
         this.dragBtn,
         arrangeBtn,
@@ -146,8 +151,15 @@ export class WorksheetView {
       this.pushDrag(e, this.growHandle, rows?.split ?? null, rows?.kids ?? [], rows ? rows.kids.length - 1 : 0);
     });
     this.growHandle.addEventListener('dblclick', () => store.resizeSheet(this.wsId, null));
+    this.annoBar = h(
+      'div',
+      { class: 'anno-mode-bar', hidden: true },
+      icon(MessageSquarePlus, 15),
+      h('span', {}, '주석 모드 — 그래프를 클릭하면 그 시점에, 드래그하면 그 구간에 주석을 답니다.'),
+      h('button', { type: 'button', onclick: (() => store.setAnnotating(false)) as EventListener }, '취소 (Esc)'),
+    );
     const content = h('div', { class: 'view-content' }, this.tilesEl, this.growHandle, this.emptyState);
-    this.el = h('div', { class: 'workspace-leaf' }, header, content, h('div', { class: 'maximize-host' }));
+    this.el = h('div', { class: 'workspace-leaf' }, header, content, this.annoBar, h('div', { class: 'maximize-host' }));
 
     this.bindDrop(content);
     // where new tiles go depends on the real worksheet size
@@ -168,6 +180,10 @@ export class WorksheetView {
       store.on('range', (ws) => ws === this.wsId && this.syncToolbar()),
       store.on('settings', () => this.syncToolbar()),
       store.on('worksheets', () => this.syncToolbar()),
+      store.on('annotating', () => {
+        this.annoBtn.classList.toggle('is-active', store.annotating);
+        this.annoBar.hidden = !store.annotating;
+      }),
     );
   }
 

@@ -8,6 +8,7 @@ import type {
   WidgetState,
   Workspace,
   Worksheet,
+  Annotation,
 } from './types';
 import { debounce, uid } from './util';
 import { nextSlot, slotColor } from './palette';
@@ -25,6 +26,10 @@ type Events = {
   cursor: { ws: string; x: number | null; from: string | null };
   /** work folder / workspace file / dirty state changed */
   project: void;
+  /** annotation list changed */
+  annotations: void;
+  /** annotation mode switched, or an annotation was focused (transient UI state) */
+  annotating: void;
 };
 
 type Handler<T> = (payload: T) => void;
@@ -47,6 +52,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultMaxPoints: 4000,
   dragMode: 'zoom',
   zoomY: false,
+  rightTab: 'props',
 };
 
 function newWorksheet(name: string): Worksheet {
@@ -103,7 +109,7 @@ class Store {
   }
   emit<K extends keyof Events>(ev: K, payload: Events[K]) {
     this.handlers.get(ev)?.forEach((fn) => (fn as Handler<Events[K]>)(payload));
-    if (ev !== 'cursor' && ev !== 'selection' && ev !== 'project') {
+    if (ev !== 'cursor' && ev !== 'selection' && ev !== 'project' && ev !== 'annotating') {
       this.save();
       this.onChange?.(ev);
     }
@@ -296,6 +302,45 @@ class Store {
       if (w) return { ws, w };
     }
     return null;
+  }
+
+  // ---------- annotations ----------
+  /** Annotation mode: the next click / drag on a chart adds a note. */
+  annotating = false;
+  /** The annotation last opened from the list (its marker is highlighted). */
+  focusedAnnotation: string | null = null;
+
+  get annotations(): Annotation[] {
+    return (this.ws.annotations ??= []);
+  }
+
+  setAnnotating(on: boolean) {
+    if (this.annotating === on) return;
+    this.annotating = on;
+    this.emit('annotating', undefined);
+  }
+
+  focusAnnotation(id: string | null) {
+    this.focusedAnnotation = id;
+    this.emit('annotating', undefined);
+  }
+
+  addAnnotation(a: Annotation) {
+    this.annotations.push(a);
+    this.emit('annotations', undefined);
+  }
+
+  updateAnnotation(id: string, patch: Partial<Annotation>) {
+    const a = this.annotations.find((x) => x.id === id);
+    if (!a) return;
+    Object.assign(a, patch, { updatedAt: Date.now() });
+    this.emit('annotations', undefined);
+  }
+
+  removeAnnotation(id: string) {
+    this.ws.annotations = this.annotations.filter((a) => a.id !== id);
+    if (this.focusedAnnotation === id) this.focusedAnnotation = null;
+    this.emit('annotations', undefined);
   }
 
   // ---------- tiles ----------

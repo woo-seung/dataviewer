@@ -25,15 +25,17 @@ import {
   LayoutDashboard,
 } from 'lucide';
 import { store } from '../store';
-import type { ChartType, SeriesRef, TimeRange, WidgetState } from '../types';
+import type { Annotation, AnnotationValue, ChartType, SeriesRef, TimeRange, WidgetState } from '../types';
 import { dropTarget, draggable, isSeries, seriesPayload, type DragPayload } from './dnd';
 import type { Side } from '../layout';
 import { arrangeMenu } from './arrange';
+import { ANNOTATION_COLORS, noteTitle, whenText } from '../annotations';
+import { openAnnotationEditor } from './annotationEditor';
 import { engine, log, type SeriesKey } from '../engine';
 import { saveBlob } from '../dialogs';
 import { formatTime } from '../data/time';
 import { resolveColor, withAlpha } from '../palette';
-import { cssVar, formatBytes, formatCount, formatValue, h, icon, iconButton, rafThrottle } from '../util';
+import { cssVar, uid, formatBytes, formatCount, formatValue, h, icon, iconButton, rafThrottle } from '../util';
 import { notice, showMenu, type MenuItem } from './overlays';
 import { actions } from '../actions';
 
@@ -148,6 +150,7 @@ export class ChartWidget {
   private unsub: (() => void)[] = [];
   private ro: ResizeObserver;
   private dropZone: HTMLElement;
+  private annoLayer: HTMLElement;
   private maxParent: { parent: HTMLElement; next: Node | null } | null = null;
   private renderedRange: TimeRange | null = null;
   private pan: { x: number; range: TimeRange } | null = null;
@@ -194,7 +197,8 @@ export class ChartWidget {
     this.yLabel = h('div', { class: 'crosshair-label is-y' });
     this.empty = h('div', { class: 'widget-empty' }, icon(ChartLine, 28), h('div', {}, '사이드바에서 시리즈를 여기로 드래그하세요'));
     this.missing = h('div', { class: 'widget-missing' });
-    this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
+    this.annoLayer = h('div', { class: 'anno-layer' });
+    this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.annoLayer, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
     this.legend = h('div', { class: 'widget-legend' });
     this.content = h('div', { class: 'widget' }, header, h('div', { class: 'widget-body' }, this.plotWrap, this.legend));
     this.dropZone = h('div', { class: 'tile-drop-zone' });
@@ -221,6 +225,11 @@ export class ChartWidget {
       store.on('settings', () => this.render()),
       store.on('selection', (sel) => this.content.classList.toggle('is-selected', sel === this.id)),
       store.on('cursor', (c) => this.onCursor(c)),
+      store.on('annotations', () => this.drawAnnotations()),
+      store.on('annotating', () => {
+        this.plotHost.classList.toggle('is-annotating', store.annotating);
+        this.drawAnnotations();
+      }),
     );
     this.content.classList.toggle('is-selected', store.ws.selectedWidgetId === this.id);
     this.render();
@@ -448,6 +457,10 @@ export class ChartWidget {
             return null;
           },
           mousedown: (_u, _t, handler) => (e: MouseEvent) => {
+            if (store.annotating && e.button === 0) {
+              this.startAnnotate(e);
+              return null;
+            }
             if (!zoomMode || e.button === 1 || e.shiftKey) {
               this.startPan(e);
               return null;
@@ -457,6 +470,7 @@ export class ChartWidget {
         },
       },
       hooks: {
+        draw: [(u) => this.drawAnnotations(u)],
         setSelect: [
           (u) => {
             const sel = u.select;
@@ -534,6 +548,154 @@ export class ChartWidget {
       },
       { passive: false },
     );
+  }
+
+  // ---------------- annotations ----------------
+  /** Annotation mode: a click pins a note to a moment, a drag to a span. */
+  private startAnnotate(e: MouseEvent) {
+    const u = this.u;
+    if (!u) return;
+    const r = u.over.getBoundingClientRect();
+    const x0 = Math.max(0, Math.min(r.width, e.clientX - r.left));
+    const band = h('div', { class: 'anno-drag' });
+    band.style.left = `${x0}px`;
+    this.annoLayer.append(band);
+    let x1 = x0;
+    const move = (ev: MouseEvent) => {
+      x1 = Math.max(0, Math.min(r.width, ev.clientX - r.left));
+      band.style.left = `${Math.min(x0, x1)}px`;
+      band.style.width = `${Math.abs(x1 - x0)}px`;
+    };
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      band.remove();
+      store.setAnnotating(false);
+      const at = { x: ev.clientX, y: ev.clientY };
+      if (Math.abs(x1 - x0) < 4) void this.createAnnotation(u.posToVal(x0, 'x'), null, e.clientY - r.top, at);
+      else void this.createAnnotation(u.posToVal(Math.min(x0, x1), 'x'), u.posToVal(Math.max(x0, x1), 'x'), null, at);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }
+
+  /** Capture the data and the current view, then let the user write the note. */
+  private async createAnnotation(t: number, t2: number | null, py: number | null, at: { x: number; y: number }) {
+    const st = this.state;
+    const u = this.u;
+    const ws = store.sheet(this.wsId);
+    const series = this.loadedSeries(st).filter((s) => s.visible);
+    const keys = series.map(seriesKey);
+    const tr = (s: SeriesRef, v: number | null | undefined) => (v === null || v === undefined ? null : v * s.scale + s.offset);
+    let values: AnnotationValue[] = [];
+    let y: number | null = null;
+    let seriesId: string | undefined;
+    try {
+      if (t2 === null) {
+        let vals = keys.length ? await engine.values(keys, t) : [];
+        values = series.map((s, i) => ({ label: s.label, sourceId: s.sourceId, column: s.column, value: tr(s, vals[i]) }));
+        // the pin sits on the series line nearest to the click
+        let best = Infinity;
+        values.forEach((v, i) => {
+          if (v.value === null || v.value === undefined || !u || py === null) return;
+          const d = Math.abs(u.valToPos(v.value, 'y') - py);
+          if (d < best) {
+            best = d;
+            y = v.value;
+            seriesId = series[i].id;
+          }
+        });
+        // snap to that series' nearest sample, and read every series there
+        const anchor = series.findIndex((x) => x.id === seriesId);
+        if (anchor >= 0) {
+          const [ts] = await engine.times([keys[anchor]], t);
+          if (ts !== null && ts !== undefined && ts !== t) {
+            t = ts;
+            vals = await engine.values(keys, t);
+            values = series.map((s, i) => ({ label: s.label, sourceId: s.sourceId, column: s.column, value: tr(s, vals[i]) }));
+            y = values[anchor].value ?? y;
+          }
+        }
+      } else {
+        const stats = keys.length ? await engine.stats(keys, t, t2) : [];
+        values = series.map((s, i) => {
+          const x = stats[i];
+          return { label: s.label, sourceId: s.sourceId, column: s.column, min: tr(s, x?.min), max: tr(s, x?.max), mean: tr(s, x?.mean), count: x?.count ?? 0 };
+        });
+      }
+    } catch (e) {
+      notice(`주석 데이터를 읽지 못했습니다: ${(e as Error).message}`, 5000, 'error');
+    }
+    const a: Annotation = {
+      id: uid('a'),
+      worksheetId: this.wsId,
+      widgetId: this.id,
+      kind: t2 === null ? 'point' : 'range',
+      t,
+      ...(t2 === null ? { y, seriesId } : { t2 }),
+      note: '',
+      color: ANNOTATION_COLORS[store.annotations.length % ANNOTATION_COLORS.length],
+      createdAt: Date.now(),
+      values,
+      view: { range: { ...this.curRange }, linked: st.linked, yAxis: { ...st.yAxis }, visible: series.map((s) => s.id) },
+      widgetTitle: st.title,
+      sheetName: ws?.name ?? '',
+    };
+    store.addAnnotation(a);
+    store.focusAnnotation(a.id);
+    openAnnotationEditor(a, at, true);
+  }
+
+  /** Pins (moments) and bands (spans) over the plot, positioned from the current scales. */
+  private drawAnnotations(u = this.u) {
+    const layer = this.annoLayer;
+    const mine = store.annotations.filter((a) => a.widgetId === this.id && a.worksheetId === this.wsId);
+    if (!u || !mine.length) {
+      layer.querySelectorAll('.anno-mark').forEach((m) => m.remove());
+      return;
+    }
+    const o = u.over.getBoundingClientRect();
+    const w = this.plotWrap.getBoundingClientRect();
+    if (!o.width) return;
+    Object.assign(layer.style, { left: `${o.left - w.left}px`, top: `${o.top - w.top}px`, width: `${o.width}px`, height: `${o.height}px` });
+    const W = o.width;
+    const H = o.height;
+    const marks: HTMLElement[] = [];
+    for (const a of mine) {
+      const focused = store.focusedAnnotation === a.id;
+      const tip = `${noteTitle(a)}\n${whenText(a)}${a.note.includes('\n') ? `\n\n${a.note}` : ''}\n\n클릭: 메모 보기·편집`;
+      const edit = (ev: MouseEvent) => {
+        ev.stopPropagation();
+        store.focusAnnotation(a.id);
+        openAnnotationEditor(a, { x: ev.clientX, y: ev.clientY }, false);
+      };
+      const chip = h('div', { class: 'anno-chip', title: tip }, noteTitle(a));
+      chip.addEventListener('mousedown', (ev) => ev.stopPropagation());
+      chip.addEventListener('click', edit);
+      if (a.kind === 'range' && a.t2 !== undefined) {
+        const x1 = u.valToPos(a.t, 'x');
+        const x2 = u.valToPos(a.t2, 'x');
+        if (x2 < 0 || x1 > W) continue;
+        const l = Math.max(0, x1);
+        const band = h('div', { class: `anno-mark anno-range ${focused ? 'is-focused' : ''}`, style: `--c:${a.color}` }, chip);
+        Object.assign(band.style, { left: `${l}px`, width: `${Math.max(2, Math.min(W, x2) - l)}px` });
+        marks.push(band);
+      } else {
+        const x = u.valToPos(a.t, 'x');
+        if (x < -6 || x > W + 6) continue;
+        const yv = a.y;
+        const py = yv === null || yv === undefined ? 8 : Math.max(0, Math.min(H, u.valToPos(yv, 'y')));
+        const line = h('div', { class: `anno-mark anno-line ${focused ? 'is-focused' : ''}`, style: `--c:${a.color};left:${x}px` });
+        const pin = h('div', { class: `anno-mark anno-pin ${focused ? 'is-focused' : ''}`, style: `--c:${a.color};left:${x}px;top:${py}px`, title: tip });
+        pin.addEventListener('mousedown', (ev) => ev.stopPropagation());
+        pin.addEventListener('click', edit);
+        chip.classList.add('is-point');
+        line.append(chip);
+        marks.push(line, pin);
+      }
+    }
+    layer.querySelectorAll('.anno-mark').forEach((m) => m.remove());
+    layer.append(...marks);
   }
 
   private startPan(e: MouseEvent) {

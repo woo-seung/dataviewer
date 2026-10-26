@@ -118,6 +118,49 @@ export interface Settings {
   dragMode: 'zoom' | 'pan';
   /** Allow box-zoom / wheel-zoom on the value axis too. */
   zoomY: boolean;
+  /** Which right-sidebar tab is shown. */
+  rightTab?: 'props' | 'annotations';
+}
+
+/** One series' data captured with an annotation (value at a point, or stats over a range). */
+export interface AnnotationValue {
+  label: string;
+  sourceId: string;
+  column: string;
+  value?: number | null;
+  min?: number | null;
+  max?: number | null;
+  mean?: number | null;
+  count?: number;
+}
+
+/**
+ * A note pinned to a chart, at one moment (`point`) or over a span (`range`),
+ * with the data there and the view it was made in, so opening it brings that
+ * screen back.
+ */
+export interface Annotation {
+  id: string;
+  worksheetId: string;
+  widgetId: string;
+  kind: 'point' | 'range';
+  /** Point time, or range start (epoch ms). */
+  t: number;
+  /** Range end. */
+  t2?: number;
+  /** Value the point pin sits on, and the series it belongs to. */
+  y?: number | null;
+  seriesId?: string;
+  note: string;
+  color: string;
+  createdAt: number;
+  updatedAt?: number;
+  values: AnnotationValue[];
+  /** The chart's view when the note was made. */
+  view: { range: TimeRange; linked: boolean; yAxis: YAxisOptions; visible: string[] };
+  /** Names at creation time (shown if the widget is deleted later). */
+  widgetTitle: string;
+  sheetName: string;
 }
 
 /**
@@ -136,6 +179,7 @@ export interface Workspace {
   version: 1;
   worksheets: Worksheet[];
   sourceMeta?: SourceMeta[];
+  annotations?: Annotation[];
   activeId: string;
   selectedWidgetId: string | null;
   settings: Settings;
