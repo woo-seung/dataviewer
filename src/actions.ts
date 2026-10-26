@@ -34,6 +34,7 @@ export const actions = {
     const src = await project.importFile({ file }, true);
     if (!src) return;
     const ws = store.active;
+    const fresh = !ws.widgets.length;
     const id = (n: string) => ({ sourceId: src.id, column: n });
     const axis = (unit: string, includeZero: boolean, siPrefix = false) => ({ auto: true, min: null, max: null, log: false, unit, siPrefix, includeZero });
     store.addWidget(ws.id, { title: 'CPU load', x: 0, y: 0, w: 6, h: 5, type: 'area', yAxis: axis('%', true) }, [id('cpu_load')]);
@@ -41,6 +42,7 @@ export const actions = {
     store.addWidget(ws.id, { title: 'Temperature', x: 0, y: 5, w: 8, h: 5, yAxis: axis('°C', false) }, [id('temperature_c')]);
     store.addWidget(ws.id, { title: 'Disk IOPS', x: 8, y: 5, w: 4, h: 5, type: 'scatter' }, [id('disk_iops')]);
     store.addWidget(ws.id, { title: 'Memory', x: 0, y: 10, w: 12, h: 5, type: 'step' }, [id('memory_mb')]);
+    if (fresh) store.retile(ws.id);
   },
 
   chartSource,

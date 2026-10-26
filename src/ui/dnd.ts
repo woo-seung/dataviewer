@@ -1,13 +1,13 @@
 /**
  * Pointer-event drag & drop for in-app drags (series → charts, legend rows,
- * tabs). HTML5 drag & drop is unavailable in the Windows webview while native
+ * tabs, widget tiles). HTML5 drag & drop is unavailable in the Windows webview while native
  * file drops are enabled, so the app does its own: a ghost follows the pointer
  * and the innermost registered target under it receives over/leave/drop.
  */
 import type { SeriesDrag } from '../types';
 import { h } from '../util';
 
-export type DragPayload = { kind: 'series'; data: SeriesDrag } | { kind: 'tab'; id: string };
+export type DragPayload = { kind: 'series'; data: SeriesDrag } | { kind: 'tab'; id: string } | { kind: 'widget'; ws: string; id: string };
 
 export interface DropTarget {
   accepts(p: DragPayload): boolean;

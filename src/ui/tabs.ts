@@ -73,7 +73,7 @@ export class TabBar {
       draggable(tab, () => ({ kind: 'tab', id: ws.id }), () => ws.name);
       let hoverTimer: ReturnType<typeof setTimeout> | undefined;
       dropTarget(tab, {
-        accepts: (p) => (p.kind === 'tab' && p.id !== ws.id) || (isSeries(p) && !active),
+        accepts: (p) => (p.kind === 'tab' && p.id !== ws.id) || (isSeries(p) && !active) || (p.kind === 'widget' && p.ws !== ws.id),
         over: (p) => {
           if (isSeries(p) && !hoverTimer) hoverTimer = setTimeout(() => store.setActive(ws.id), 450);
         },
@@ -85,6 +85,7 @@ export class TabBar {
           clearTimeout(hoverTimer);
           hoverTimer = undefined;
           if (p.kind === 'tab') store.moveWorksheet(p.id, idx);
+          else if (p.kind === 'widget') store.moveWidgetToSheet(p.ws, p.id, ws.id);
           else store.setActive(ws.id);
         },
       });

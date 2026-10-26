@@ -1,3 +1,4 @@
+import type { Tile } from './layout';
 import type { TimeFormat } from './data/time';
 
 /** How a CSV was imported, by column name, so it can be re-imported without asking. */
@@ -77,7 +78,7 @@ export interface WidgetState {
   title: string;
   type: ChartType;
   series: SeriesRef[];
-  /** Grid placement (gridstack units). */
+  /** Former free-grid placement; only read to tile older workspaces. */
   x: number;
   y: number;
   w: number;
@@ -98,6 +99,8 @@ export interface Worksheet {
   id: string;
   name: string;
   widgets: WidgetState[];
+  /** Tiled arrangement of the widgets (absent in older workspaces: built from x/y/w/h). */
+  layout?: Tile | null;
   /** Shared timeline; null = fit all data. */
   range: TimeRange | null;
   crosshair: boolean;

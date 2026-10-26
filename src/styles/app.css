@@ -581,13 +581,118 @@ label.checkbox-container::after {
   inset: auto !important;
 }
 
-/* ============ Widgets ============ */
-.grid-stack {
-  min-height: 100%;
+/* ============ Tiles (split panes) ============ */
+.tiles {
+  display: flex;
+  height: 100%;
+  min-height: 0;
 }
-.grid-stack > .grid-stack-item > .grid-stack-item-content.widget {
+.tiles > * {
+  flex: 1 1 0px;
+}
+.tile-split {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.tile-split.is-row {
+  flex-direction: row;
+}
+.tile-split.is-col {
+  flex-direction: column;
+}
+.tile {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.tile > .widget {
+  flex: 1;
+  min-width: 0;
+  container-type: size;
+}
+/* small tiles give the plot the room: the legend table hides */
+@container (max-height: 260px) {
+  .widget-legend {
+    display: none;
+  }
+}
+.tile-gutter {
+  flex: 0 0 6px;
+  position: relative;
+  z-index: 2;
+}
+.tile-gutter.is-row {
+  cursor: col-resize;
+}
+.tile-gutter.is-col {
+  cursor: row-resize;
+}
+.tile-gutter::after {
+  content: '';
+  position: absolute;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.tile-gutter.is-row::after {
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+}
+.tile-gutter.is-col::after {
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 2px;
+}
+.tile-gutter:hover::after,
+.tile-gutter.is-active::after {
+  background: var(--interactive-accent);
+}
+body.is-dragging .tile-gutter {
+  pointer-events: none;
+}
+/* where a dragged widget / series will land */
+.tile-drop-zone {
+  position: absolute;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-on-accent, #fff);
+  background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.28);
+  border: 2px solid hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.8);
+  border-radius: var(--radius-m);
+  pointer-events: none;
+  z-index: 6;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.tile-drop-zone.is-center {
+  display: flex;
   inset: 0;
 }
+.tile-drop-zone.is-left {
+  display: flex;
+  inset: 0 50% 0 0;
+}
+.tile-drop-zone.is-right {
+  display: flex;
+  inset: 0 0 0 50%;
+}
+.tile-drop-zone.is-top {
+  display: flex;
+  inset: 0 0 50% 0;
+}
+.tile-drop-zone.is-bottom {
+  display: flex;
+  inset: 50% 0 0 0;
+}
+
+/* ============ Widgets ============ */
 .widget {
   display: flex;
   flex-direction: column;
@@ -604,18 +709,8 @@ label.checkbox-container::after {
   border-color: hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.7);
   box-shadow: 0 0 0 1px hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.35);
 }
-.widget.is-drop-target {
+.tile.is-drop-target > .widget {
   border-color: var(--interactive-accent);
-  box-shadow: 0 0 0 3px hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.3);
-}
-.ui-draggable-dragging > .widget,
-.ui-resizable-resizing > .widget {
-  box-shadow: var(--shadow-l);
-}
-.grid-stack-placeholder > .placeholder-content {
-  background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.08) !important;
-  border: 1px dashed hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.6);
-  border-radius: var(--radius-m);
 }
 .widget-header {
   height: 34px;
@@ -813,32 +908,6 @@ label.checkbox-container::after {
 .legend-swatch.is-off {
   background: transparent;
   box-shadow: inset 0 0 0 2px var(--swatch);
-}
-
-/* gridstack resize handles */
-.grid-stack-item > .ui-resizable-se {
-  background: none;
-  width: 14px;
-  height: 14px;
-  right: 2px;
-  bottom: 2px;
-  transform: none;
-}
-.grid-stack-item > .ui-resizable-se::after {
-  content: '';
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 7px;
-  height: 7px;
-  border-right: 2px solid var(--text-faint);
-  border-bottom: 2px solid var(--text-faint);
-  border-radius: 0 0 2px 0;
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-.grid-stack-item:hover > .ui-resizable-se::after {
-  opacity: 0.8;
 }
 
 /* ============ Explorer ============ */
@@ -1792,4 +1861,23 @@ body.is-dragging * {
 .tree-item-self.is-orphan .tree-item-inner {
   color: var(--text-faint);
   font-style: italic;
+}
+
+/* "Ctrl + wheel to zoom" hint over a chart */
+.wheel-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: var(--font-ui-medium, 14px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 5;
+}
+.wheel-hint.is-visible {
+  opacity: 1;
 }

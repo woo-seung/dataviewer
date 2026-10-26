@@ -11,6 +11,7 @@ import type {
 } from './types';
 import { debounce, uid } from './util';
 import { nextSlot, slotColor } from './palette';
+import { equalize, fromGrid, insertAt, insertAuto, reconcile, remove, renameLeaves, setSizes, swap, type Side, type Tile } from './layout';
 
 type Events = {
   sources: void;
@@ -226,10 +227,14 @@ class Store {
     const copy: Worksheet = JSON.parse(JSON.stringify(src));
     copy.id = uid('ws');
     copy.name = `${src.name} (copy)`;
+    const ids = new Map<string, string>();
     copy.widgets.forEach((w) => {
-      w.id = uid('w');
+      const id = uid('w');
+      ids.set(w.id, id);
+      w.id = id;
       w.series.forEach((s) => (s.id = uid('s')));
     });
+    copy.layout = renameLeaves(this.layoutOf(id), ids);
     const idx = this.ws.worksheets.indexOf(src);
     this.ws.worksheets.splice(idx + 1, 0, copy);
     this.emit('worksheets', undefined);
@@ -289,12 +294,88 @@ class Store {
     return null;
   }
 
-  addWidget(wsId: string, partial: Partial<WidgetState> = {}, items: { sourceId: string; column: string }[] = []): WidgetState | null {
+  // ---------- tiles ----------
+  /** Size of the worksheet area in px (set by the view; guides where new tiles go). */
+  viewSize = { w: 1600, h: 900 };
+
+  /** The worksheet's tile tree, kept in step with its widgets. */
+  layoutOf(wsId: string): Tile | null {
+    const ws = this.sheet(wsId);
+    if (!ws) return null;
+    if (ws.layout === undefined) ws.layout = fromGrid(ws.widgets);
+    const ids = ws.widgets.map((w) => w.id);
+    ws.layout = reconcile(ws.layout, ids, this.viewSize);
+    return ws.layout;
+  }
+
+  private setTiles(wsId: string, t: Tile | null) {
+    const ws = this.sheet(wsId);
+    if (ws) ws.layout = t;
+  }
+
+  /** Move a tile next to another one (`center` = swap places). */
+  moveTile(wsId: string, id: string, targetId: string, side: Side | 'center') {
+    const t = this.layoutOf(wsId);
+    if (!t || id === targetId) return;
+    this.setTiles(wsId, side === 'center' ? swap(t, id, targetId) : insertAt(remove(t, id), targetId, id, side));
+    this.emit('widgets', wsId);
+  }
+
+  /** Move a widget to another worksheet (dropped on its tab). */
+  moveWidgetToSheet(fromWs: string, id: string, toWs: string) {
+    const from = this.sheet(fromWs);
+    const to = this.sheet(toWs);
+    const w = from?.widgets.find((x) => x.id === id);
+    if (!from || !to || !w || from === to) return;
+    const t = this.layoutOf(fromWs);
+    from.widgets = from.widgets.filter((x) => x.id !== id);
+    from.layout = remove(t, id);
+    const before = this.layoutOf(toWs);
+    to.widgets.push(w);
+    to.layout = insertAuto(before, id, undefined, this.viewSize);
+    if (this.ws.selectedWidgetId === id) this.select(null);
+    this.emit('widgets', fromWs);
+    this.emit('widgets', toWs);
+    this.emit('range', toWs);
+  }
+
+  /** Splitter drag: new fractions for one split (no re-render needed). */
+  setTileSizes(wsId: string, splitId: string, sizes: number[]) {
+    const t = this.layoutOf(wsId);
+    if (!t) return;
+    this.setTiles(wsId, setSizes(t, splitId, sizes));
+    this.save();
+    this.onChange?.('widgets');
+  }
+
+  equalizeTiles(wsId: string) {
+    const t = this.layoutOf(wsId);
+    if (!t) return;
+    this.setTiles(wsId, equalize(t));
+    this.emit('widgets', wsId);
+  }
+
+  /** Re-tile from the widgets' x/y/w/h (used to lay out a generated dashboard). */
+  retile(wsId: string) {
+    const ws = this.sheet(wsId);
+    if (!ws) return;
+    ws.layout = fromGrid(ws.widgets);
+    this.emit('widgets', wsId);
+  }
+
+  /** Add a widget; `place` puts it beside a tile, otherwise the largest tile is split. */
+  addWidget(
+    wsId: string,
+    partial: Partial<WidgetState> = {},
+    items: { sourceId: string; column: string }[] = [],
+    place?: { target: string; side: Side },
+  ): WidgetState | null {
     const ws = this.sheet(wsId);
     if (!ws) return null;
     const w = defaultWidget(partial);
-    if (partial.y === undefined) w.y = ws.widgets.reduce((m, x) => Math.max(m, x.y + x.h), 0);
+    const before = this.layoutOf(wsId);
     ws.widgets.push(w);
+    ws.layout = place ? insertAt(before, place.target, w.id, place.side) : insertAuto(before, w.id, undefined, this.viewSize);
     this.appendSeries(w, items);
     if (!w.title) w.title = this.autoTitle(w);
     this.emit('widgets', wsId);
@@ -309,8 +390,9 @@ class Store {
     copy.id = uid('w');
     copy.series.forEach((s) => (s.id = uid('s')));
     copy.title = `${w.title} (copy)`;
-    copy.y = w.y + w.h;
+    const before = this.layoutOf(wsId);
     this.sheet(wsId)!.widgets.push(copy);
+    this.setTiles(wsId, insertAuto(before, copy.id, id, this.viewSize));
     this.emit('widgets', wsId);
     this.select(copy.id);
   }
@@ -318,7 +400,9 @@ class Store {
   removeWidget(wsId: string, id: string) {
     const ws = this.sheet(wsId);
     if (!ws) return;
+    const t = this.layoutOf(wsId);
     ws.widgets = ws.widgets.filter((w) => w.id !== id);
+    ws.layout = remove(t, id);
     if (this.ws.selectedWidgetId === id) this.select(null);
     this.emit('widgets', wsId);
     this.emit('range', wsId);
@@ -329,16 +413,6 @@ class Store {
     if (!w) return;
     Object.assign(w, patch);
     this.emit('widget', { ws: wsId, id });
-  }
-
-  /** Layout-only update from the grid (no re-render). */
-  setLayout(wsId: string, id: string, l: { x: number; y: number; w: number; h: number }) {
-    const w = this.widget(wsId, id);
-    if (!w) return;
-    if (w.x === l.x && w.y === l.y && w.w === l.w && w.h === l.h) return;
-    Object.assign(w, l);
-    this.save();
-    this.onChange?.('widgets');
   }
 
   select(id: string | null) {

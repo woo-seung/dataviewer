@@ -1,4 +1,3 @@
-import 'gridstack/dist/gridstack.min.css';
 import 'uplot/dist/uPlot.min.css';
 import './styles/app.css';
 import { initStore, MAX_SERIES_PER_CHART } from './store';

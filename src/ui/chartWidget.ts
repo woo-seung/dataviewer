@@ -25,7 +25,8 @@ import {
 } from 'lucide';
 import { store } from '../store';
 import type { ChartType, SeriesRef, TimeRange, WidgetState } from '../types';
-import { dropTarget, draggable, isSeries, seriesPayload } from './dnd';
+import { dropTarget, draggable, isSeries, seriesPayload, type DragPayload } from './dnd';
+import type { Side } from '../layout';
 import { engine, log, type SeriesKey } from '../engine';
 import { saveBlob } from '../dialogs';
 import { formatTime } from '../data/time';
@@ -144,6 +145,7 @@ export class ChartWidget {
   private valueCells: HTMLElement[] = [];
   private unsub: (() => void)[] = [];
   private ro: ResizeObserver;
+  private dropZone: HTMLElement;
   private maxParent: { parent: HTMLElement; next: Node | null } | null = null;
   private renderedRange: TimeRange | null = null;
   private pan: { x: number; range: TimeRange } | null = null;
@@ -192,8 +194,11 @@ export class ChartWidget {
     this.missing = h('div', { class: 'widget-missing' });
     this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
     this.legend = h('div', { class: 'widget-legend' });
-    this.content = h('div', { class: 'grid-stack-item-content widget' }, header, h('div', { class: 'widget-body' }, this.plotWrap, this.legend));
-    this.el = h('div', { class: 'grid-stack-item', 'gs-id': this.id, 'gs-x': st.x, 'gs-y': st.y, 'gs-w': st.w, 'gs-h': st.h }, this.content);
+    this.content = h('div', { class: 'widget' }, header, h('div', { class: 'widget-body' }, this.plotWrap, this.legend));
+    this.dropZone = h('div', { class: 'tile-drop-zone' });
+    this.el = h('div', { class: 'tile', 'data-id': this.id }, this.content, this.dropZone);
+    // drag the header to move the tile next to (or in place of) another one
+    draggable(header, () => ({ kind: 'widget', ws: this.wsId, id: this.id }), () => this.state.title || '차트');
 
     this.content.addEventListener('pointerdown', () => store.select(this.id));
     this.content.addEventListener('contextmenu', (e) => {
@@ -508,6 +513,11 @@ export class ChartWidget {
       (e) => {
         const u = this.u;
         if (!u || !(e.target as HTMLElement).closest('.u-over')) return;
+        // plain wheel scrolls the worksheet; Ctrl (or a trackpad pinch) zooms the time axis
+        if (!e.ctrlKey && !e.metaKey) {
+          if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) this.wheelHint();
+          return;
+        }
         e.preventDefault();
         const r = u.over.getBoundingClientRect();
         const c = u.posToVal(e.clientX - r.left, 'x');
@@ -522,6 +532,19 @@ export class ChartWidget {
       },
       { passive: false },
     );
+  }
+
+  private hintTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Briefly tell how to zoom when the wheel only scrolled the page. */
+  private wheelHint() {
+    let el = this.plotWrap.querySelector<HTMLElement>('.wheel-hint');
+    if (!el) {
+      el = h('div', { class: 'wheel-hint' }, 'Ctrl + 스크롤로 시간축 확대/축소');
+      this.plotWrap.append(el);
+    }
+    el.classList.add('is-visible');
+    clearTimeout(this.hintTimer);
+    this.hintTimer = setTimeout(() => el!.classList.remove('is-visible'), 1200);
   }
 
   private startPan(e: MouseEvent) {
@@ -730,15 +753,52 @@ export class ChartWidget {
 
   // ---------------- drop target ----------------
   private bindDrop() {
-    dropTarget(this.content, {
-      accepts: (p) => isSeries(p) && p.data.fromWidget?.widgetId !== this.id,
+    dropTarget(this.el, {
+      accepts: (p) => (isSeries(p) && p.data.fromWidget?.widgetId !== this.id) || (p.kind === 'widget' && p.ws === this.wsId && p.id !== this.id),
+      over: (p, e) => this.showZone(this.zoneAt(p, e), p.kind),
+      leave: () => this.showZone(null),
       drop: (p, e) => {
+        const zone = this.zoneAt(p, e);
+        this.showZone(null);
+        if (p.kind === 'widget') {
+          store.moveTile(this.wsId, p.id, this.id, zone);
+          return;
+        }
         if (!isSeries(p)) return;
-        if (p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, this.id, e.altKey || e.ctrlKey);
-        else store.addSeries(this.wsId, this.id, p.data.items);
-        store.select(this.id);
+        const copy = e.altKey || e.ctrlKey;
+        if (zone === 'center') {
+          if (p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, this.id, copy);
+          else store.addSeries(this.wsId, this.id, p.data.items);
+          store.select(this.id);
+          return;
+        }
+        // an edge: a new chart beside this one
+        const w = store.addWidget(this.wsId, {}, p.data.fromWidget ? [] : p.data.items, { target: this.id, side: zone });
+        if (w && p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, w.id, copy);
       },
     });
+  }
+
+  /** Which part of the tile the pointer is over: an edge (split there) or the middle. */
+  private zoneAt(p: DragPayload, e: PointerEvent): Side | 'center' {
+    const r = this.el.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width;
+    const fy = (e.clientY - r.top) / r.height;
+    // series: the middle adds to this chart; widgets: the middle swaps the two
+    const edge = p.kind === 'widget' ? 0.3 : 0.18;
+    const d: [Side, number][] = [
+      ['left', fx],
+      ['right', 1 - fx],
+      ['top', fy],
+      ['bottom', 1 - fy],
+    ];
+    const [side, dist] = d.reduce((a, b) => (b[1] < a[1] ? b : a));
+    return dist < edge ? side : 'center';
+  }
+
+  private showZone(zone: Side | 'center' | null, kind?: DragPayload['kind']) {
+    this.dropZone.className = `tile-drop-zone${zone ? ` is-${zone}` : ''}`;
+    this.dropZone.textContent = !zone ? '' : zone !== 'center' ? (kind === 'widget' ? '여기로 이동' : '새 차트') : kind === 'widget' ? '자리 바꾸기' : '이 차트에 추가';
   }
 
   // ---------------- actions ----------------

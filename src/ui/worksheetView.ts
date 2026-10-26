@@ -1,4 +1,3 @@
-import { GridStack } from 'gridstack';
 import {
   ArrowLeft,
   ArrowRight,
@@ -9,7 +8,7 @@ import {
   Crosshair,
   FolderOpen,
   Hand,
-  LayoutGrid,
+  LayoutDashboard,
   Maximize,
   Plus,
   Sparkles,
@@ -19,6 +18,7 @@ import {
 } from 'lucide';
 import { store } from '../store';
 import type { TimeRange } from '../types';
+import { MIN_TILE, type Tile } from '../layout';
 import { dropTarget, isSeries } from './dnd';
 import { formatDuration, fromInputValue, toInputValue } from '../data/time';
 import { h, icon, iconButton } from '../util';
@@ -39,8 +39,7 @@ const PRESETS: { label: string; ms: number | null; hint?: string }[] = [
 
 export class WorksheetView {
   readonly el: HTMLElement;
-  private gridEl: HTMLElement;
-  private grid: GridStack;
+  private tilesEl: HTMLElement;
   private widgets = new Map<string, ChartWidget>();
   private unsub: (() => void)[] = [];
   private fromInput: HTMLInputElement;
@@ -51,7 +50,6 @@ export class WorksheetView {
   private dragBtn: HTMLButtonElement;
   private durLabel: HTMLElement;
   private emptyState: HTMLElement;
-  private syncingGrid = false;
 
   constructor(readonly wsId: string) {
     this.backBtn = iconButton(ArrowLeft, '뒤로 (Alt+←)', () => store.back(this.wsId));
@@ -107,12 +105,12 @@ export class WorksheetView {
         { class: 'view-actions' },
         this.crossBtn,
         this.dragBtn,
-        iconButton(LayoutGrid, '레이아웃 정렬', () => this.compact()),
+        iconButton(LayoutDashboard, '타일 크기 균등하게', () => store.equalizeTiles(this.wsId)),
         iconButton(Plus, '빈 차트 위젯 추가', () => store.addWidget(this.wsId)),
       ),
     );
 
-    this.gridEl = h('div', { class: 'grid-stack' });
+    this.tilesEl = h('div', { class: 'tiles' });
     this.emptyState = h(
       'div',
       { class: 'empty-state' },
@@ -126,31 +124,16 @@ export class WorksheetView {
         h('button', { type: 'button', onclick: (() => store.addWidget(this.wsId)) as EventListener }, icon(Plus, 15), ' 빈 위젯'),
       ),
     );
-    const content = h('div', { class: 'view-content' }, this.gridEl, this.emptyState);
+    const content = h('div', { class: 'view-content' }, this.tilesEl, this.emptyState);
     this.el = h('div', { class: 'workspace-leaf' }, header, content, h('div', { class: 'maximize-host' }));
 
-    this.grid = GridStack.init(
-      {
-        column: 12,
-        cellHeight: 64,
-        margin: 5,
-        float: true,
-        animate: true,
-        handle: '.widget-header',
-        resizable: { handles: 'e,se,s,sw,w' },
-        columnOpts: { breakpoints: [{ w: 720, c: 1 }] },
-      },
-      this.gridEl,
-    );
-    this.grid.on('change', (_e, nodes) => {
-      if (this.syncingGrid) return;
-      for (const n of nodes) {
-        const id = n.el?.getAttribute('gs-id');
-        if (id && this.grid.getColumn() === 12) store.setLayout(this.wsId, id, { x: n.x ?? 0, y: n.y ?? 0, w: n.w ?? 6, h: n.h ?? 5 });
-      }
-    });
-
     this.bindDrop(content);
+    // where new tiles go depends on the real worksheet size
+    const ro = new ResizeObserver(() => {
+      if (content.clientWidth > 0) store.viewSize = { w: content.clientWidth - 12, h: content.clientHeight - 12 };
+    });
+    ro.observe(content);
+    this.unsub.push(() => ro.disconnect());
     this.syncWidgets();
     this.syncToolbar();
 
@@ -170,7 +153,6 @@ export class WorksheetView {
     this.unsub.forEach((f) => f());
     this.widgets.forEach((w) => w.destroy());
     this.widgets.clear();
-    this.grid.destroy(false);
     this.el.remove();
   }
 
@@ -178,35 +160,99 @@ export class WorksheetView {
     const ws = store.sheet(this.wsId);
     if (!ws) return;
     const ids = new Set(ws.widgets.map((w) => w.id));
-    this.syncingGrid = true;
-    this.grid.batchUpdate(true);
     for (const [id, w] of this.widgets) {
       if (!ids.has(id)) {
         if (w.isMaximized) w.toggleMaximize();
-        this.grid.removeWidget(w.el, false, false);
         w.destroy();
         this.widgets.delete(id);
       }
     }
-    for (const st of ws.widgets) {
-      if (this.widgets.has(st.id)) continue;
-      const cw = new ChartWidget(this.wsId, st.id);
-      this.widgets.set(st.id, cw);
-      this.gridEl.append(cw.el);
-      this.grid.makeWidget(cw.el, { x: st.x, y: st.y, w: st.w, h: st.h, minW: 2, minH: 2, id: st.id });
-    }
-    this.grid.batchUpdate(false);
-    this.syncingGrid = false;
-    // persist positions gridstack may have adjusted
-    for (const n of this.grid.engine.nodes) {
-      const id = n.el?.getAttribute('gs-id');
-      if (id && this.grid.getColumn() === 12) store.setLayout(this.wsId, id, { x: n.x ?? 0, y: n.y ?? 0, w: n.w ?? 6, h: n.h ?? 5 });
-    }
+    for (const st of ws.widgets) if (!this.widgets.has(st.id)) this.widgets.set(st.id, new ChartWidget(this.wsId, st.id));
+    this.renderTiles();
     this.emptyState.hidden = ws.widgets.length > 0;
   }
 
-  private compact() {
-    this.grid.compact();
+  /** Lay the widgets out as nested flex splits with draggable gutters. */
+  private renderTiles() {
+    const tree = store.layoutOf(this.wsId);
+    if (!tree) return this.tilesEl.replaceChildren();
+    const root = this.buildTile(tree);
+    // more tiles than fit: the worksheet scrolls instead of squeezing them
+    this.tilesEl.style.minWidth = `${root.minW}px`;
+    this.tilesEl.style.minHeight = `${root.minH}px`;
+    this.tilesEl.replaceChildren(root.el);
+  }
+
+  private buildTile(t: Tile): { el: HTMLElement; minW: number; minH: number } {
+    if (t.kind === 'leaf') {
+      const w = this.widgets.get(t.id);
+      return { el: w ? w.el : h('div', { class: 'tile' }), minW: MIN_W, minH: MIN_H };
+    }
+    const row = t.dir === 'row';
+    const el = h('div', { class: `tile-split ${row ? 'is-row' : 'is-col'}` });
+    const parts = t.children.map((c) => this.buildTile(c));
+    let minW = 0;
+    let minH = 0;
+    parts.forEach((p, i) => {
+      p.el.style.flex = `${t.sizes[i]} 1 0px`;
+      p.el.style.minWidth = `${p.minW}px`;
+      p.el.style.minHeight = `${p.minH}px`;
+      if (i > 0) el.append(this.gutter(t, i, parts.map((x) => x.el)));
+      el.append(p.el);
+      if (row) {
+        minW += p.minW + (i ? GUTTER : 0);
+        minH = Math.max(minH, p.minH);
+      } else {
+        minH += p.minH + (i ? GUTTER : 0);
+        minW = Math.max(minW, p.minW);
+      }
+    });
+    return { el, minW, minH };
+  }
+
+  /** Splitter between child i-1 and i: drag to share their space, double-click to even it out. */
+  private gutter(t: Tile & { kind: 'split' }, i: number, kids: HTMLElement[]) {
+    const row = t.dir === 'row';
+    const g = h('div', { class: `tile-gutter ${row ? 'is-row' : 'is-col'}`, title: '끌어서 크기 조절 · 더블클릭: 반반' });
+    const sizes = [...t.sizes];
+    const apply = () => kids.forEach((k, j) => (k.style.flex = `${sizes[j]} 1 0px`));
+    g.addEventListener('pointerdown', (down) => {
+      if (down.button !== 0) return;
+      down.preventDefault();
+      g.setPointerCapture(down.pointerId);
+      g.classList.add('is-active');
+      const a = kids[i - 1].getBoundingClientRect();
+      const b = kids[i].getBoundingClientRect();
+      const span = row ? a.width + b.width : a.height + b.height;
+      const share = sizes[i - 1] + sizes[i];
+      const start = row ? down.clientX : down.clientY;
+      const startA = row ? a.width : a.height;
+      const minA = row ? parseFloat(kids[i - 1].style.minWidth) : parseFloat(kids[i - 1].style.minHeight);
+      const minB = row ? parseFloat(kids[i].style.minWidth) : parseFloat(kids[i].style.minHeight);
+      const move = (e: PointerEvent) => {
+        const px = Math.max(minA || 0, Math.min(span - (minB || 0), startA + (row ? e.clientX : e.clientY) - start));
+        sizes[i - 1] = (share * px) / span;
+        sizes[i] = share - sizes[i - 1];
+        apply();
+      };
+      const up = () => {
+        g.classList.remove('is-active');
+        g.removeEventListener('pointermove', move);
+        g.removeEventListener('pointerup', up);
+        g.removeEventListener('pointercancel', up);
+        store.setTileSizes(this.wsId, t.id, [...sizes]);
+      };
+      g.addEventListener('pointermove', move);
+      g.addEventListener('pointerup', up);
+      g.addEventListener('pointercancel', up);
+    });
+    g.addEventListener('dblclick', () => {
+      const share = sizes[i - 1] + sizes[i];
+      sizes[i - 1] = sizes[i] = share / 2;
+      apply();
+      store.setTileSizes(this.wsId, t.id, [...sizes]);
+    });
+    return g;
   }
 
   widget(id: string) {
@@ -258,18 +304,20 @@ export class WorksheetView {
     store.setRange(this.wsId, next);
   }
 
-  /** Dropping series on empty grid space creates a new widget there. */
+  /** Series dropped on the empty worksheet (or its margin) become a new widget. */
   private bindDrop(area: HTMLElement) {
     dropTarget(area, {
       accepts: isSeries,
       drop: (p, e) => {
         if (!isSeries(p)) return;
-        const rect = this.gridEl.getBoundingClientRect();
-        const cell = this.grid.getCellFromPixel({ left: e.clientX - rect.left, top: e.clientY - rect.top });
-        const x = Math.max(0, Math.min(6, cell.x));
-        const w = store.addWidget(this.wsId, { x, y: Math.max(0, cell.y) }, p.data.fromWidget ? [] : p.data.items);
+        const w = store.addWidget(this.wsId, {}, p.data.fromWidget ? [] : p.data.items);
         if (w && p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, w.id, e.altKey || e.ctrlKey);
       },
     });
   }
 }
+
+/** Smallest tile (px); a worksheet with more tiles than fit scrolls. */
+const MIN_W = MIN_TILE.w;
+const MIN_H = MIN_TILE.h;
+const GUTTER = 6;
