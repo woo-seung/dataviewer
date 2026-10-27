@@ -1,10 +1,9 @@
-import { ChevronRight, FilePlus, FolderOpen, LayoutDashboard, Save, X } from 'lucide';
+import { ChevronRight, FilePlus, FolderOpen, LayoutDashboard, Save } from 'lucide';
 import { project } from '../project';
 import { store } from '../store';
 import { h, icon, iconButton } from '../util';
-import { showMenu } from './overlays';
 
-/** Current workspace + recently opened .chronos files. */
+/** The current workspace, with open / new / save. */
 export class RecentFiles {
   readonly el: HTMLElement;
   private collapsed = false;
@@ -45,32 +44,6 @@ export class RecentFiles {
           iconButton(FilePlus, '새 워크스페이스', () => void project.newWorkspace(), 'clickable-icon nav-action-button'),
         ),
       );
-      const recent = project.recent.filter((r) => r.id !== project.recentId);
-      if (recent.length) out.push(h('div', { class: 'recent-caption' }, '최근 파일'));
-      for (const r of recent) {
-        const row = h(
-          'div',
-          { class: 'tree-item-self nav-file-title', title: r.name },
-          icon(LayoutDashboard, 14, 'file-icon'),
-          h('div', { class: 'tree-item-inner' }, r.name.replace(/\.chronos$/i, '')),
-          iconButton(X, '목록에서 제거', () => project.forget(r.id)),
-        );
-        const open = async () => {
-          if (await project.confirmDiscard()) await project.openRecent(r);
-        };
-        row.addEventListener('click', () => void open());
-        row.addEventListener('contextmenu', (e) => {
-          e.preventDefault();
-          showMenu(
-            [
-              { title: '열기', icon: FolderOpen, onClick: () => void open() },
-              { title: '목록에서 제거', icon: X, onClick: () => project.forget(r.id) },
-            ],
-            { x: e.clientX, y: e.clientY },
-          );
-        });
-        out.push(row);
-      }
     }
     this.el.replaceChildren(...out);
   }

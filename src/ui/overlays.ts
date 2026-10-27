@@ -10,13 +10,20 @@ export function notice(msg: string, timeout = 3500, kind: 'info' | 'error' = 'in
     noticeHost = h('div', { class: 'notice-container', role: 'status', 'aria-live': 'polite' });
     document.body.append(noticeHost);
   }
-  const el = h('div', { class: `notice ${kind === 'error' ? 'is-error' : ''}` }, msg);
+  // `el` is the message part: callers may replace its content (buttons, progress)
+  const el = h('div', { class: 'notice-body' }, msg);
+  const close = h('button', { type: 'button', class: 'notice-close', 'aria-label': '닫기', title: '닫기' }, icon(X, 14));
+  const box = h('div', { class: `notice ${kind === 'error' ? 'is-error' : ''}` }, el, close);
   const hide = () => {
-    el.classList.add('is-hiding');
-    setTimeout(() => el.remove(), 200);
+    box.classList.add('is-hiding');
+    setTimeout(() => box.remove(), 200);
   };
-  if (timeout > 0) el.addEventListener('click', hide);
-  noticeHost.append(el);
+  close.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hide();
+  });
+  if (timeout > 0) box.addEventListener('click', hide);
+  noticeHost.append(box);
   if (timeout > 0) setTimeout(hide, timeout);
   return { el, set: (m) => (el.textContent = m), hide };
 }

@@ -1638,6 +1638,33 @@ body.is-dragging .tile-gutter {
   cursor: pointer;
   animation: notice-in 0.16s ease-out;
 }
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-right: 6px !important;
+}
+.notice-body {
+  flex: 1;
+  min-width: 0;
+}
+.notice-close {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0 !important;
+  margin: -2px 0 0;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-faint);
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  cursor: pointer;
+}
+.notice-close:hover {
+  color: var(--text-normal);
+}
 .notice.is-error {
   border-color: var(--background-modifier-error);
 }
