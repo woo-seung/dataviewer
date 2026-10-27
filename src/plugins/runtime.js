@@ -123,6 +123,9 @@
       void live();
     };
     const move = (ev) => {
+      // the release happened outside this frame: finish the drag where it was
+      if (!(ev.buttons & 1)) return up(last);
+      last = ev;
       const r = root.getBoundingClientRect();
       p1 = { x: Math.max(0, Math.min(a.width, ev.clientX - r.left - a.left)), y: Math.max(0, Math.min(a.height, ev.clientY - r.top - a.top)) };
       if (box) {
@@ -134,10 +137,14 @@
         void live();
       }
     };
+    let last = e;
     const up = (ev) => {
       root.removeEventListener('pointermove', move);
       root.removeEventListener('pointerup', up);
       root.removeEventListener('pointercancel', up);
+      root.removeEventListener('lostpointercapture', up);
+      // a lost capture carries no position: use the last move
+      if (ev.type !== 'pointerup') ev = last;
       root.style.cursor = '';
       if (mark) mark.remove();
       want = null;
@@ -161,6 +168,7 @@
     root.addEventListener('pointermove', move);
     root.addEventListener('pointerup', up);
     root.addEventListener('pointercancel', up);
+    root.addEventListener('lostpointercapture', up);
   });
   root.addEventListener('dblclick', (e) => {
     if (zoomCfg && currentZoom && local(e)) post({ type: 'zoom', zoom: null });
