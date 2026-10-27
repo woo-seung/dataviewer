@@ -7,7 +7,6 @@ import {
   Clock,
   Crosshair,
   FolderOpen,
-  Hand,
   LayoutDashboard,
   ChartLine,
   Puzzle,
@@ -15,7 +14,6 @@ import {
   Maximize,
   Plus,
   Sparkles,
-  SquareDashedMousePointer,
   ZoomIn,
   ZoomOut,
 } from 'lucide';
@@ -61,7 +59,6 @@ export class WorksheetView {
   private crossBtn: HTMLButtonElement;
   private annoBtn: HTMLButtonElement;
   private annoBar: HTMLElement;
-  private dragBtn: HTMLButtonElement;
   private durLabel: HTMLElement;
   private emptyState: HTMLElement;
 
@@ -84,9 +81,6 @@ export class WorksheetView {
       const ws = store.sheet(this.wsId)!;
       store.updateWorksheet(this.wsId, { crosshair: !ws.crosshair });
     });
-    this.dragBtn = iconButton(SquareDashedMousePointer, '드래그 모드: 줌 / 이동', () =>
-      store.updateSettings({ dragMode: store.ws.settings.dragMode === 'zoom' ? 'pan' : 'zoom' }),
-    );
 
     const presetBtn = h('button', { class: 'toolbar-button', type: 'button', title: '시간 범위 프리셋' }, icon(Clock, 15), h('span', {}, '범위'), icon(ChevronDown, 14));
     presetBtn.addEventListener('click', () =>
@@ -142,7 +136,6 @@ export class WorksheetView {
         { class: 'view-actions' },
         this.annoBtn,
         this.crossBtn,
-        this.dragBtn,
         arrangeBtn,
         addBtn,
       ),
@@ -381,9 +374,6 @@ export class WorksheetView {
       this.durLabel.textContent = '데이터 없음';
     }
     this.crossBtn.classList.toggle('is-active', ws.crosshair);
-    const pan = store.ws.settings.dragMode === 'pan';
-    this.dragBtn.replaceChildren(icon(pan ? Hand : SquareDashedMousePointer, 16));
-    this.dragBtn.title = pan ? '드래그 모드: 이동 (클릭 → 줌)' : '드래그 모드: 박스 줌 (클릭 → 이동)';
   }
 
   applyPreset(ms: number | null) {

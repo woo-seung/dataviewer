@@ -39,4 +39,11 @@ export type ParamValue = ColumnRef | ColumnRef[] | number | string | boolean | n
 export interface PluginWidget {
   id: string;
   params: Record<string, ParamValue>;
+  /** Box zoom / pan of a plugin chart, in its data units (null = fit). */
+  zoom?: PluginZoom | null;
+}
+
+export interface PluginZoom {
+  x?: [number, number] | null;
+  y?: [number, number] | null;
 }

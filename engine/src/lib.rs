@@ -459,7 +459,7 @@ impl Engine {
                 let (total, t, v) = analysis::raw(&cols[0], start, end, n("limit", 100_000).min(5_000_000));
                 floats(vec![total as f64, t.len() as f64], vec![&t, &v])
             }
-            "regress" => Reply::Json(serde_json::to_value(analysis::regress(&cols[0], &cols[1], start, end))?),
+            "regress" => Reply::Json(serde_json::to_value(analysis::regress(&cols[0], &cols[1], start, end, args.get("normalize").and_then(Value::as_bool).unwrap_or(false)))?),
             "hist" => {
                 let range = match (args.get("min").and_then(Value::as_f64), args.get("max").and_then(Value::as_f64)) {
                     (Some(a), Some(b)) if b > a => Some((a, b)),
@@ -467,7 +467,14 @@ impl Engine {
                 };
                 Reply::Json(serde_json::to_value(analysis::hist(&cols[0], start, end, n("bins", 50), range))?)
             }
-            "hist2d" => Reply::Json(serde_json::to_value(analysis::hist2d(&cols[0], &cols[1], start, end, n("xBins", 50).min(500), n("yBins", 50).min(500)))?),
+            "hist2d" => {
+                let pair = |a: &str, b: &str| match (args.get(a).and_then(Value::as_f64), args.get(b).and_then(Value::as_f64)) {
+                    (Some(lo), Some(hi)) => Some((lo, hi)),
+                    _ => None,
+                };
+                let win = analysis::Window2 { x: pair("xMin", "xMax"), y: pair("yMin", "yMax") };
+                Reply::Json(serde_json::to_value(analysis::hist2d(&cols[0], &cols[1], start, end, n("xBins", 50).min(500), n("yBins", 50).min(500), win))?)
+            }
             _ => {
                 let keys: Vec<String> = serde_json::from_value(args.get("keys").cloned().unwrap_or(json!(["hour"])))?;
                 let k = |i: usize| keys.get(i).map(|s| analysis::Key::parse(s).ok_or_else(|| Error::msg(format!("알 수 없는 키: {s}")))).transpose();

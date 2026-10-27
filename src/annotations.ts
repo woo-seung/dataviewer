@@ -47,4 +47,15 @@ export function openAnnotation(a: Annotation) {
   }
   store.select(w.id);
   store.focusAnnotation(a.id);
+  revealWidget(w.id);
+}
+
+/** Scroll the worksheet so the widget is in view (after the sheet has been drawn). */
+export function revealWidget(id: string) {
+  const go = (tries: number) => {
+    const el = document.querySelector<HTMLElement>(`.workspace-leaf:not([hidden]) .tile[data-id="${CSS.escape(id)}"]`) ?? document.querySelector<HTMLElement>(`.tile[data-id="${CSS.escape(id)}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+    else if (tries > 0) setTimeout(() => go(tries - 1), 60);
+  };
+  requestAnimationFrame(() => go(10));
 }

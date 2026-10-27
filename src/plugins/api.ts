@@ -44,11 +44,16 @@ export function pluginApi(wsId: string, widgetId: string, width: () => number) {
         return engine.aligned(cols.map(key), start, end, num(a.maxRows, 20_000));
       }
       case 'regression':
-        return engine.regress(key(a.x), key(a.y), start, end);
+        return engine.regress(key(a.x), key(a.y), start, end, a.normalize === true);
       case 'histogram':
         return engine.hist(key(a.column), start, end, num(a.bins, 50), a.min as number | undefined, a.max as number | undefined);
       case 'histogram2d':
-        return engine.hist2d(key(a.x), key(a.y), start, end, num(a.xBins ?? a.bins, 50), num(a.yBins ?? a.bins, 50));
+        return engine.hist2d(key(a.x), key(a.y), start, end, num(a.xBins ?? a.bins, 50), num(a.yBins ?? a.bins, 50), {
+          xMin: a.xMin as number | undefined,
+          xMax: a.xMax as number | undefined,
+          yMin: a.yMin as number | undefined,
+          yMax: a.yMax as number | undefined,
+        });
       case 'buckets':
         return engine.buckets(key(a.column), start, end, (a.keys as string[]) ?? ['hour']);
       default:

@@ -362,7 +362,6 @@ export class ChartWidget {
       st.yAxis,
       st.lineWidth,
       st.markers,
-      store.ws.settings.dragMode,
       store.ws.settings.zoomY,
     ]);
     const aligned = [x as unknown as number[], ...(data as number[][])] as uPlot.AlignedData;
@@ -388,7 +387,6 @@ export class ChartWidget {
     const grid = cssVar('--chart-grid');
     const font = `11px ${cssVar('--font-interface')}`;
     const y = st.yAxis;
-    const zoomMode = store.ws.settings.dragMode === 'zoom';
     const stacked = st.type === 'stacked';
     const stepped = uPlot.paths.stepped!({ align: 1 });
     const fmtY = (v: number) => formatValue(v, y.siPrefix, y.unit);
@@ -485,7 +483,8 @@ export class ChartWidget {
         y: false,
         points: { show: false },
         focus: { prox: -1 },
-        drag: { x: zoomMode, y: zoomMode && store.ws.settings.zoomY, uni: store.ws.settings.zoomY ? 20 : Infinity, setScale: false },
+        // Ctrl+drag = box zoom (see mousedown below); a plain drag pans
+        drag: { x: true, y: store.ws.settings.zoomY, uni: store.ws.settings.zoomY ? 20 : Infinity, setScale: false },
         bind: {
           dblclick: () => () => {
             this.resetZoom();
@@ -496,11 +495,9 @@ export class ChartWidget {
               this.startAnnotate(e);
               return null;
             }
-            if (!zoomMode || e.button === 1 || e.shiftKey) {
-              this.startPan(e);
-              return null;
-            }
-            return handler(e);
+            if ((e.ctrlKey || e.metaKey) && e.button === 0) return handler(e);
+            if (e.button === 0 || e.button === 1) this.startPan(e);
+            return null;
           },
         },
       },
@@ -624,13 +621,14 @@ export class ChartWidget {
       this.frame = new PluginFrame(rec.code, pluginApi(this.wsId, this.id, () => this.pluginHost.clientWidth));
       this.frame.onSetRange = (a, b) => this.setRange({ start: a, end: b });
       this.frame.onError = (m) => log(`plugin ${rec.id}: ${m}`);
+      this.frame.onZoom = (z) => store.setPluginZoom(this.wsId, this.id, z);
       this.pluginHost.replaceChildren(this.frame.iframe);
       this.frameKey = key;
     }
     const w = this.pluginHost.clientWidth;
     const hgt = this.pluginHost.clientHeight;
     if (w < 10 || hgt < 10) return;
-    void this.frame.render({ params: resolveParams(rec, spec.params), width: w, height: hgt, range: store.widgetRange(this.wsId, st) });
+    void this.frame.render({ params: resolveParams(rec, spec.params), width: w, height: hgt, range: store.widgetRange(this.wsId, st), zoom: spec.zoom ?? null });
     this.drawAnnotations();
   }
 
@@ -843,7 +841,6 @@ export class ChartWidget {
   }
 
   private startPan(e: MouseEvent) {
-    e.preventDefault();
     this.pan = { x: e.clientX, range: { ...this.curRange } };
     this.plotHost.classList.add('is-panning');
     const move = rafThrottle((cx: number) => {
@@ -872,6 +869,7 @@ export class ChartWidget {
 
   resetZoom() {
     const st = this.state;
+    if (st.plugin) return store.setPluginZoom(this.wsId, this.id, null);
     st.yAxis = { ...st.yAxis, auto: true };
     if (st.linked) store.setRange(this.wsId, null);
     else store.setWidgetRange(this.wsId, this.id, null);

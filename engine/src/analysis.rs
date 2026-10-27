@@ -90,18 +90,37 @@ pub struct Regression {
     pub y_mean: Option<f64>,
     pub x_min: Option<f64>,
     pub x_max: Option<f64>,
+    pub y_min: Option<f64>,
+    pub y_max: Option<f64>,
+    /// Computed on x and y min-max scaled to 0..1 (slope / intercept / means are in those units).
+    pub normalized: bool,
+    /// R² of the 1:1 line y = x (on the normalized values when `normalized`).
+    pub r2_identity: Option<f64>,
 }
 
 /// Least-squares line y = slope·x + intercept over all aligned (x, y) pairs.
-pub fn regress(x: &Col, y: &Col, start: f64, end: f64) -> Regression {
-    // Welford-style running sums for numerical stability
-    let (mut n, mut mx, mut my, mut sxx, mut syy, mut sxy) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for_each_aligned(&[Col { time: x.time, values: x.values }, Col { time: y.time, values: y.values }], start, end, |_, r| {
-        let (a, b) = (r[0], r[1]);
-        if a.is_nan() || b.is_nan() {
+/// With `normalize`, x and y are first scaled to 0..1 by their min / max in the
+/// range (r and R² are unchanged by that; slope, intercept and the 1:1 R² are).
+pub fn regress(x: &Col, y: &Col, start: f64, end: f64, normalize: bool) -> Regression {
+    let cols = [Col { time: x.time, values: x.values }, Col { time: y.time, values: y.values }];
+    let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    for_each_aligned(&cols, start, end, |_, r| {
+        if r[0].is_nan() || r[1].is_nan() {
             return;
         }
+        x0 = x0.min(r[0]);
+        x1 = x1.max(r[0]);
+        y0 = y0.min(r[1]);
+        y1 = y1.max(r[1]);
+    });
+    let scale = |v: f64, lo: f64, hi: f64| if hi > lo { (v - lo) / (hi - lo) } else { 0.0 };
+    // Welford-style running sums for numerical stability
+    let (mut n, mut mx, mut my, mut sxx, mut syy, mut sxy, mut ss_id) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
+    for_each_aligned(&cols, start, end, |_, r| {
+        if r[0].is_nan() || r[1].is_nan() {
+            return;
+        }
+        let (a, b) = if normalize { (scale(r[0], x0, x1), scale(r[1], y0, y1)) } else { (r[0], r[1]) };
         n += 1.0;
         let dx = a - mx;
         let dy = b - my;
@@ -110,25 +129,32 @@ pub fn regress(x: &Col, y: &Col, start: f64, end: f64) -> Regression {
         sxx += dx * (a - mx);
         syy += dy * (b - my);
         sxy += dx * (b - my);
-        lo = lo.min(a);
-        hi = hi.max(a);
+        ss_id += (b - a) * (b - a);
     });
+    let fin = |v: f64| v.is_finite().then_some(v);
+    let base = Regression { n: n as u64, x_min: fin(x0), x_max: fin(x1), y_min: fin(y0), y_max: fin(y1), normalized: normalize, ..Default::default() };
     if n < 2.0 {
-        return Regression { n: n as u64, ..Default::default() };
+        return base;
     }
     let slope = if sxx > 0.0 { Some(sxy / sxx) } else { None };
     let r = if sxx > 0.0 && syy > 0.0 { Some(sxy / (sxx * syy).sqrt()) } else { None };
     Regression {
-        n: n as u64,
         slope,
         intercept: slope.map(|s| my - s * mx),
         r,
         r2: r.map(|r| r * r),
         x_mean: Some(mx),
         y_mean: Some(my),
-        x_min: Some(lo),
-        x_max: Some(hi),
+        r2_identity: (syy > 0.0).then(|| 1.0 - ss_id / syy),
+        ..base
     }
+}
+
+/// Optional value window for 2-D binning (zoomed plugin charts).
+#[derive(Clone, Copy, Default)]
+pub struct Window2 {
+    pub x: Option<(f64, f64)>,
+    pub y: Option<(f64, f64)>,
 }
 
 #[derive(Serialize)]
@@ -196,7 +222,7 @@ pub struct Histogram2d {
 }
 
 /// Density of aligned (x, y) pairs on a grid.
-pub fn hist2d(x: &Col, y: &Col, start: f64, end: f64, bx: usize, by: usize) -> Histogram2d {
+pub fn hist2d(x: &Col, y: &Col, start: f64, end: f64, bx: usize, by: usize, win: Window2) -> Histogram2d {
     let (bx, by) = (bx.clamp(1, 2000), by.clamp(1, 2000));
     let cols = [Col { time: x.time, values: x.values }, Col { time: y.time, values: y.values }];
     let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
@@ -209,6 +235,12 @@ pub fn hist2d(x: &Col, y: &Col, start: f64, end: f64, bx: usize, by: usize) -> H
         y0 = y0.min(r[1]);
         y1 = y1.max(r[1]);
     });
+    if let Some((a, b)) = win.x.filter(|(a, b)| b > a) {
+        (x0, x1) = (a, b);
+    }
+    if let Some((a, b)) = win.y.filter(|(a, b)| b > a) {
+        (y0, y1) = (a, b);
+    }
     let mut counts = vec![0u64; bx * by];
     let mut total = 0;
     if x0.is_finite() {
@@ -357,13 +389,19 @@ mod tests {
         let (total, t, cols) = aligned(&[Col { time: &ta, values: &va }, Col { time: &tb, values: &vb }], f64::NEG_INFINITY, f64::INFINITY, 10);
         assert_eq!(total, 50);
         assert!(t.len() <= 10 && cols[0].len() == t.len());
-        let r = regress(&a, &b, f64::NEG_INFINITY, f64::INFINITY);
+        let r = regress(&a, &b, f64::NEG_INFINITY, f64::INFINITY, false);
         assert_eq!(r.n, 50);
         assert!((r.slope.unwrap() - 3.0).abs() < 1e-9 && (r.intercept.unwrap() - 1.0).abs() < 1e-9);
         assert!((r.r2.unwrap() - 1.0).abs() < 1e-12);
+        // normalized: same R², line becomes y = x, and the 1:1 R² is then perfect too
+        let rn = regress(&a, &b, f64::NEG_INFINITY, f64::INFINITY, true);
+        assert!((rn.r2.unwrap() - 1.0).abs() < 1e-12);
+        assert!((rn.slope.unwrap() - 1.0).abs() < 1e-9 && rn.intercept.unwrap().abs() < 1e-9);
+        assert!((rn.r2_identity.unwrap() - 1.0).abs() < 1e-9);
+        assert!(r.r2_identity.unwrap() < 0.0, "raw y = 3x+1 is far from the 1:1 line");
         let h = hist(&a, f64::NEG_INFINITY, f64::INFINITY, 10, None);
         assert_eq!(h.counts, vec![10; 10]);
-        let h2 = hist2d(&a, &b, f64::NEG_INFINITY, f64::INFINITY, 5, 5);
+        let h2 = hist2d(&a, &b, f64::NEG_INFINITY, f64::INFINITY, 5, 5, Window2::default());
         assert_eq!(h2.total, 50);
         assert_eq!(h2.counts.iter().sum::<u64>(), 50);
         // 2026-01-05 is a Monday

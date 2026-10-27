@@ -1,8 +1,9 @@
 // Chronos Vault plugin: value distribution of one or more columns on shared bins.
+// Drag = pan, Ctrl+drag = zoom on the value axis (re-binned inside it).
 export default {
   id: 'histogram',
   name: '히스토그램',
-  version: '1.0.0',
+  version: '1.1.0',
   description: '한 개 이상 열의 값 분포 (같은 구간으로 겹쳐 그림), 평균 표시',
   params: {
     columns: { type: 'columns', label: '열', min: 1, max: 6 },
@@ -23,7 +24,9 @@ export default {
       el.innerHTML = `<div style="padding:16px;color:${theme.muted}">이 구간에 데이터가 없습니다.</div>`;
       return;
     }
-    const hs = await Promise.all(cols.map((c) => ctx.data.histogram(c, { bins: p.bins, min: lo, max: hi === lo ? lo + 1 : hi })));
+    const zx = ctx.zoom && ctx.zoom.x;
+    const [b0, b1] = zx || [lo, hi === lo ? lo + 1 : hi];
+    const hs = await Promise.all(cols.map((c) => ctx.data.histogram(c, { bins: p.bins, min: b0, max: b1 })));
     if (ctx.signal.aborted) return;
     const ys = hs.map((hh) => hh.counts.map((n) => (p.density ? (100 * n) / Math.max(1, hh.total) : n)));
     const m = { top: 28, right: 16, bottom: 30, left: 56 };
@@ -51,6 +54,9 @@ export default {
     const axis = (s) => s.call((a) => a.selectAll('text').attr('fill', theme.muted)).call((a) => a.selectAll('line,path').attr('stroke', theme.grid));
     g.append('g').attr('transform', `translate(0,${h})`).call(d3.axisBottom(x).ticks(Math.max(2, w / 80))).call(axis);
     g.append('g').call(d3.axisLeft(y).ticks(Math.max(2, h / 40)).tickFormat((v) => (p.density ? `${v}%` : format.number(v, 3)))).call(axis);
+    if (zx) svg.append('text').attr('x', width - m.right).attr('y', 16).attr('text-anchor', 'end').attr('fill', theme.faint).text('확대됨 · 더블클릭: 전체');
+    // drag = pan, Ctrl+drag = box zoom along the value axis, double-click = fit
+    ctx.enableZoom({ x, area: { left: m.left, top: m.top, width: w, height: h } });
     let lx = 0;
     cols.forEach((c, k) => {
       const t = svg.append('text').attr('x', m.left + lx + 14).attr('y', 16).attr('fill', theme.text).text(`${c.label}  (평균 ${format.number(stats[k] && stats[k].mean)})`);

@@ -363,8 +363,11 @@ label.checkbox-container::after {
   display: flex;
   gap: 2px;
   align-items: flex-end;
+  /* scrolls sideways when tabs don't fit (mouse wheel works); never vertically */
   overflow-x: auto;
-  scrollbar-width: thin;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  box-sizing: border-box;
   min-width: 0;
   height: 100%;
   padding-top: 6px;
@@ -2518,4 +2521,13 @@ body.is-annotating .plugin-host::after {
   border-radius: 2px;
   width: 10px;
   height: 10px;
+}
+/* drag pans charts: no text selection while dragging */
+.widget-canvas .u-over {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+.widget-canvas.is-panning .u-over {
+  cursor: grabbing;
 }

@@ -74,6 +74,8 @@ export default {
 | \`setRange(start, end)\` | 워크시트 시간 범위를 바꿈 (예: 셀 클릭 → 그 날짜로 확대) |
 | \`signal\` | AbortSignal. 더 새로운 render가 시작되면 aborted — await 뒤에 \`if (ctx.signal.aborted) return;\` |
 | \`state\` | 렌더 사이에 유지되는 빈 객체 (캐시 등) |
+| \`zoom\` | 사용자가 확대/이동한 보기 \`{ x: [min, max] \| null, y: [min, max] \| null }\` (데이터 단위) 또는 null — 있으면 축 domain으로 쓰세요 |
+| \`enableZoom({ x, y, area })\` | 그린 뒤 호출하면 **드래그 = 이동, Ctrl+드래그 = 박스 확대, 더블클릭 = 전체** 가 켜집니다. x·y는 d3 연속 스케일(\`invert\` 필요, 한쪽만 줘도 됨), area는 \`{ left, top, width, height }\` = ctx.el 기준 플롯 영역(스케일 range는 이 영역 안 좌표 0…width / height…0). 연속 축이 있는 차트라면 꼭 호출하세요 |
 | \`d3\` | d3 v7 |
 
 ## 4. ctx.data — 데이터 (엔진이 전체 데이터에서 계산, 결과만 전달)
@@ -88,9 +90,9 @@ export default {
 | \`series(column, { maxPoints?, …opts })\` | 시간축 다운샘플(M4) \`{ t, v, total }\` — 선 그래프용 |
 | \`raw(column, { limit=200000, …opts })\` | 원본 샘플(균등 간격으로 솎음) \`{ t, v, total }\` |
 | \`aligned(columns, { maxRows=20000, …opts })\` | **같은 시각에 모두 값이 있는 행**만 \`{ t, columns: [Float64Array…], total }\` — 산점도·상관 등 |
-| \`regression(x, y, opts?)\` | 전체 짝에 대한 최소제곱 \`{ n, slope, intercept, r, r2, xMean, yMean, xMin, xMax }\` |
+| \`regression(x, y, { normalize?, …opts })\` | 전체 짝에 대한 최소제곱 \`{ n, slope, intercept, r, r2, xMean, yMean, xMin, xMax, yMin, yMax, normalized, r2Identity }\` — \`normalize: true\`면 x·y를 0–1(최소–최대)로 바꾼 뒤 계산 (r·R²는 같고 기울기·절편이 바뀜). \`r2Identity\` = y = x 선 기준 R² |
 | \`histogram(column, { bins=50, min?, max?, …opts })\` | \`{ min, max, counts: number[], total }\` |
-| \`histogram2d(x, y, { xBins=50, yBins=50, …opts })\` | \`{ xMin, xMax, yMin, yMax, xBins, yBins, counts (행 우선: counts[yi*xBins+xi]), total }\` |
+| \`histogram2d(x, y, { xBins=50, yBins=50, xMin?, xMax?, yMin?, yMax?, …opts })\` | \`{ xMin, xMax, yMin, yMax, xBins, yBins, counts (행 우선: counts[yi*xBins+xi]), total }\` |
 | \`buckets(column, { keys: [k1, k2?], …opts })\` | 달력 집계 \`[{ a, b, count, mean, min, max, sum }]\` — 키: \`hour\`(0–23), \`minute\`, \`weekday\`(0=월), \`dayOfMonth\`, \`month\`(1–12), \`year\`, \`day\`(1970-01-01부터 일수), \`yearMonth\`(1970-01부터 월수). a=k1 값, b=k2 값 |
 
 **대용량 주의:** 데이터는 수천만 행일 수 있습니다. 원본 전체를 가져오지 말고 위 집계 함수와 maxRows/limit를 쓰세요. 점은 수만 개 이상이면 Canvas로 그리세요.
@@ -101,6 +103,7 @@ export default {
 - 크기가 작아도(예: 240×150) 깨지지 않게 여백을 계산하세요.
 - 예외는 던져도 됩니다 (위젯에 오류로 표시됨). 하지만 열이 비었을 때는 안내 문구로 처리하세요.
 - 시간 범위가 바뀌면 다시 그려지므로, 보이는 범위 기준으로 계산하는 것이 기본입니다.
+- 확대/이동은 직접 구현하지 말고 \`ctx.zoom\` + \`ctx.enableZoom\`을 쓰세요 (앱 전체와 같은 조작: 드래그 = 이동, Ctrl+드래그 = 확대).
 
 ## 6. 완전한 예제 (내장 "산점도 + 회귀" 플러그인)
 

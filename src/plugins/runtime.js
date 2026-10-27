@@ -65,6 +65,80 @@
     },
   };
 
+  // ---- zoom / pan (plugins opt in with ctx.enableZoom) ----
+  let zoomCfg = null;
+  let currentZoom = null;
+  const local = (e) => {
+    if (!zoomCfg) return null;
+    const r = root.getBoundingClientRect();
+    const a = zoomCfg.area;
+    const x = e.clientX - r.left - a.left;
+    const y = e.clientY - r.top - a.top;
+    return x >= 0 && y >= 0 && x <= a.width && y <= a.height ? { x, y } : null;
+  };
+  const sorted = (a, b) => (a <= b ? [a, b] : [b, a]);
+  root.addEventListener('pointerdown', (e) => {
+    const cfg = zoomCfg;
+    const p0 = e.button === 0 ? local(e) : null;
+    if (!cfg || !p0) return;
+    e.preventDefault();
+    root.setPointerCapture(e.pointerId);
+    const box = e.ctrlKey || e.metaKey;
+    const a = cfg.area;
+    let p1 = p0;
+    let mark = null;
+    if (box) {
+      mark = document.createElement('div');
+      mark.className = 'chronos-zoom-box';
+      root.appendChild(mark);
+    } else root.style.cursor = 'grabbing';
+    const move = (ev) => {
+      const r = root.getBoundingClientRect();
+      p1 = { x: Math.max(0, Math.min(a.width, ev.clientX - r.left - a.left)), y: Math.max(0, Math.min(a.height, ev.clientY - r.top - a.top)) };
+      if (box) {
+        const [x0, x1] = cfg.x ? sorted(p0.x, p1.x) : [0, a.width];
+        const [y0, y1] = cfg.y ? sorted(p0.y, p1.y) : [0, a.height];
+        Object.assign(mark.style, { left: `${a.left + x0}px`, top: `${a.top + y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+      } else {
+        const dx = cfg.x ? ev.clientX - e.clientX : 0;
+        const dy = cfg.y ? ev.clientY - e.clientY : 0;
+        for (const c of root.children) if (c !== tip) c.style.transform = `translate(${dx}px,${dy}px)`;
+      }
+    };
+    const up = (ev) => {
+      root.removeEventListener('pointermove', move);
+      root.removeEventListener('pointerup', up);
+      root.removeEventListener('pointercancel', up);
+      root.style.cursor = '';
+      if (mark) mark.remove();
+      const keep = currentZoom || {};
+      if (box) {
+        const wx = Math.abs(p1.x - p0.x);
+        const wy = Math.abs(p1.y - p0.y);
+        const zx = cfg.x && wx > 4 ? sorted(cfg.x.invert(p0.x), cfg.x.invert(p1.x)) : keep.x || null;
+        const zy = cfg.y && wy > 4 ? sorted(cfg.y.invert(p0.y), cfg.y.invert(p1.y)) : keep.y || null;
+        if ((cfg.x && wx > 4) || (cfg.y && wy > 4)) post({ type: 'zoom', zoom: { x: zx, y: zy } });
+        return;
+      }
+      const dx = cfg.x ? ev.clientX - e.clientX : 0;
+      const dy = cfg.y ? ev.clientY - e.clientY : 0;
+      if (Math.abs(dx) + Math.abs(dy) < 3) {
+        for (const c of root.children) c.style.transform = '';
+        return;
+      }
+      // the visible window moves opposite to the drag
+      const zx = cfg.x ? sorted(cfg.x.invert(-dx), cfg.x.invert(a.width - dx)) : keep.x || null;
+      const zy = cfg.y ? sorted(cfg.y.invert(a.height - dy), cfg.y.invert(-dy)) : keep.y || null;
+      post({ type: 'zoom', zoom: { x: zx, y: zy } });
+    };
+    root.addEventListener('pointermove', move);
+    root.addEventListener('pointerup', up);
+    root.addEventListener('pointercancel', up);
+  });
+  root.addEventListener('dblclick', (e) => {
+    if (zoomCfg && currentZoom && local(e)) post({ type: 'zoom', zoom: null });
+  });
+
   const showError = (e) => {
     const msg = (e && (e.stack || e.message)) || String(e);
     root.innerHTML = '';
@@ -94,6 +168,8 @@
     document.documentElement.dataset.theme = theme.dark ? 'dark' : 'light';
     tooltip.hide();
     root.innerHTML = '';
+    zoomCfg = null;
+    currentZoom = m.zoom || null;
     const ctx = {
       el: root,
       width: m.width,
@@ -108,6 +184,12 @@
       state,
       signal: ac.signal,
       setRange: (start, end) => post({ type: 'setRange', start, end }),
+      zoom: currentZoom,
+      enableZoom(cfg) {
+        if (!cfg || !cfg.area || (!cfg.x && !cfg.y)) return;
+        zoomCfg = { x: cfg.x && cfg.x.invert ? cfg.x : null, y: cfg.y && cfg.y.invert ? cfg.y : null, area: cfg.area };
+        root.style.cursor = 'grab';
+      },
     };
     try {
       await plugin().render(ctx);

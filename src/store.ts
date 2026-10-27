@@ -12,7 +12,7 @@ import type {
 } from './types';
 import { debounce, uid } from './util';
 import { nextSlot, slotColor } from './palette';
-import type { ParamValue } from './plugins/types';
+import type { ParamValue, PluginZoom } from './plugins/types';
 import { appendRow, distribute, distributeAround, equalize, fromGrid, tileRects, neighbor, insertAt, insertAuto, reconcile, remove, renameLeaves, setSizes, swap, type Side, type Tile } from './layout';
 
 type Events = {
@@ -573,6 +573,14 @@ class Store {
   /** A widget that draws with a chart plugin instead of the time-series chart. */
   addPluginWidget(wsId: string, plugin: { id: string; name: string }, params: Record<string, ParamValue> = {}, place?: { target: string; side: Side }) {
     return this.addWidget(wsId, { title: plugin.name, plugin: { id: plugin.id, params } }, [], place);
+  }
+
+  /** Zoom / pan of a plugin chart in its own data units (null = fit everything). */
+  setPluginZoom(wsId: string, widgetId: string, zoom: PluginZoom | null) {
+    const w = this.widget(wsId, widgetId);
+    if (!w?.plugin) return;
+    w.plugin = { ...w.plugin, zoom };
+    this.emit('widget', { ws: wsId, id: widgetId });
   }
 
   setPluginParams(wsId: string, widgetId: string, patch: Record<string, ParamValue>) {

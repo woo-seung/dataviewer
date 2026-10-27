@@ -1,8 +1,9 @@
 // Chronos Vault plugin: 2-D density of two columns (paired by timestamp) on a grid.
+// Drag = pan, Ctrl+drag = zoom (re-binned inside the zoomed window).
 export default {
   id: 'density-heatmap',
   name: '밀도 히트맵 (X×Y)',
-  version: '1.0.0',
+  version: '1.1.0',
   description: '두 열을 같은 시각끼리 짝지어 X×Y 격자에 몇 번 나타났는지를 색으로 (로그 스케일)',
   params: {
     x: { type: 'column', label: 'X 열' },
@@ -15,7 +16,10 @@ export default {
       el.innerHTML = `<div style="padding:16px;color:${theme.muted}">X 열과 Y 열을 지정하세요.</div>`;
       return;
     }
-    const hm = await ctx.data.histogram2d(p.x, p.y, { xBins: p.bins, yBins: p.bins });
+    // zoomed: bin only the visible window (finer detail there)
+    const z = ctx.zoom || {};
+    const win = { ...(z.x ? { xMin: z.x[0], xMax: z.x[1] } : {}), ...(z.y ? { yMin: z.y[0], yMax: z.y[1] } : {}) };
+    const hm = await ctx.data.histogram2d(p.x, p.y, { xBins: p.bins, yBins: p.bins, ...win });
     if (ctx.signal.aborted) return;
     const m = { top: 24, right: 16, bottom: 36, left: 64 };
     const w = Math.max(10, width - m.left - m.right);
@@ -50,6 +54,9 @@ export default {
     g.append('text').attr('x', w).attr('y', h + 30).attr('text-anchor', 'end').attr('fill', theme.muted).text(p.x.label);
     g.append('text').attr('transform', `translate(${-m.left + 12},${h / 2}) rotate(-90)`).attr('text-anchor', 'middle').attr('fill', theme.muted).text(p.y.label);
     svg.append('text').attr('x', width - m.right).attr('y', 16).attr('text-anchor', 'end').attr('fill', theme.faint).text(`n = ${hm.total.toLocaleString()} · 최대 ${format.number(max)}회/칸`);
+    if (ctx.zoom) svg.append('text').attr('x', m.left).attr('y', 16).attr('fill', theme.faint).text('확대됨 · 더블클릭: 전체');
+    // drag = pan, Ctrl+drag = box zoom, double-click = fit
+    ctx.enableZoom({ x, y, area: { left: m.left, top: m.top, width: w, height: h } });
     svg.on('mousemove', (e) => {
       const [px, py] = d3.pointer(e, g.node());
       const i = Math.floor(px / cw);

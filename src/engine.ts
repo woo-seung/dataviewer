@@ -102,6 +102,11 @@ export interface Regression {
   yMean: number | null;
   xMin: number | null;
   xMax: number | null;
+  yMin: number | null;
+  yMax: number | null;
+  normalized: boolean;
+  /** R² of the 1:1 line y = x. */
+  r2Identity: number | null;
 }
 
 export interface Progress {
@@ -187,11 +192,11 @@ export const engine = {
     const [total, rows] = [f[0], f[1]];
     return { total, t: f.slice(2, 2 + rows), v: f.slice(2 + rows, 2 + 2 * rows) };
   },
-  regress: (x: SeriesKey, y: SeriesKey, start: number, end: number) => call<Regression>('regress', { x, y, start, end }),
+  regress: (x: SeriesKey, y: SeriesKey, start: number, end: number, normalize = false) => call<Regression>('regress', { x, y, start, end, normalize }),
   hist: (series: SeriesKey, start: number, end: number, bins: number, min?: number, max?: number) =>
     call<{ min: number; max: number; counts: number[]; total: number }>('hist', { series, start, end, bins, min, max }),
-  hist2d: (x: SeriesKey, y: SeriesKey, start: number, end: number, xBins: number, yBins: number) =>
-    call<{ xMin: number; xMax: number; yMin: number; yMax: number; xBins: number; yBins: number; counts: number[]; total: number }>('hist2d', { x, y, start, end, xBins, yBins }),
+  hist2d: (x: SeriesKey, y: SeriesKey, start: number, end: number, xBins: number, yBins: number, win: { xMin?: number; xMax?: number; yMin?: number; yMax?: number } = {}) =>
+    call<{ xMin: number; xMax: number; yMin: number; yMax: number; xBins: number; yBins: number; counts: number[]; total: number }>('hist2d', { x, y, start, end, xBins, yBins, ...win }),
   buckets: (series: SeriesKey, start: number, end: number, keys: string[]) =>
     call<{ a: number; b: number | null; count: number; mean: number; min: number; max: number; sum: number }[]>('buckets', { series, start, end, keys }),
   /** Downsampled windows, fetched in slices so no single reply grows past ~8 MB. */

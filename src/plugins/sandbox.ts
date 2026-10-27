@@ -11,7 +11,7 @@ import runtimeSrc from './runtime.js?raw';
 import { PALETTE } from '../palette';
 import { store } from '../store';
 import { cssVar } from '../util';
-import type { PluginManifest } from './types';
+import type { PluginManifest, PluginZoom } from './types';
 
 const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:";
 
@@ -38,6 +38,8 @@ html,body{margin:0;height:100%;overflow:hidden;background:transparent;color:var(
 #root{position:absolute;inset:0;overflow:hidden}
 svg{display:block}
 .chronos-tooltip{position:fixed;display:none;pointer-events:none;z-index:9;padding:4px 8px;border-radius:4px;background:var(--tooltip-bg);color:var(--text);border:1px solid var(--grid);font-size:11px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.chronos-zoom-box{position:absolute;border:1px dashed var(--accent);background:color-mix(in srgb,var(--accent) 15%,transparent);pointer-events:none;z-index:8}
+#root{user-select:none;-webkit-user-select:none}
 .chronos-error{margin:8px;padding:8px;white-space:pre-wrap;color:#e93147;font:11px/1.4 ui-monospace,monospace;overflow:auto;max-height:calc(100% - 16px)}
 </style>
 <script>window.__loadErrors=[];addEventListener('error',function(e){window.__loadErrors.push(e.message)});</script>
@@ -92,6 +94,7 @@ export class PluginFrame {
   onSetRange?: (start: number, end: number) => void;
   onError?: (message: string) => void;
   onRendered?: () => void;
+  onZoom?: (zoom: PluginZoom | null) => void;
   private listener: (e: MessageEvent) => void;
 
   constructor(code: string, private api: Api) {
@@ -109,6 +112,7 @@ export class PluginFrame {
       else if (m.type === 'setRange' && Number.isFinite(m.start) && Number.isFinite(m.end) && m.end > m.start) this.onSetRange?.(m.start, m.end);
       else if (m.type === 'error') this.onError?.(String(m.message));
       else if (m.type === 'rendered') this.onRendered?.();
+      else if (m.type === 'zoom') this.onZoom?.(m.zoom ?? null);
       else if (m.type === 'snapshot') {
         this.snaps.get(m.id)?.(m.url ?? null);
         this.snaps.delete(m.id);
@@ -127,7 +131,7 @@ export class PluginFrame {
     }
   }
 
-  async render(msg: { params: unknown; width: number; height: number; range: { start: number; end: number } | null }) {
+  async render(msg: { params: unknown; width: number; height: number; range: { start: number; end: number } | null; zoom: PluginZoom | null }) {
     await this.ready;
     this.iframe.contentWindow?.postMessage({ type: 'render', ...msg, theme: pluginTheme() }, '*');
   }

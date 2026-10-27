@@ -11,6 +11,16 @@ export class TabBar {
 
   constructor() {
     this.list = h('div', { class: 'workspace-tab-header-container-inner', role: 'tablist' });
+    // the wheel scrolls the tab strip sideways (its scrollbar is hidden)
+    this.list.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.list.scrollWidth <= this.list.clientWidth) return;
+        e.preventDefault();
+        this.list.scrollLeft += e.deltaY || e.deltaX;
+      },
+      { passive: false },
+    );
     this.el = h(
       'div',
       { class: 'workspace-tab-header-container' },

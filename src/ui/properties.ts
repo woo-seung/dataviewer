@@ -129,7 +129,6 @@ export class PropertiesPanel {
       '보기 설정',
       row('다크 테마', toggle(s.theme === 'dark', (v) => store.updateSettings({ theme: v ? 'dark' : 'light' }), '다크 테마')),
       row('Y축 줌 허용', toggle(s.zoomY, (v) => store.updateSettings({ zoomY: v }), 'Y축 줌'), '박스/휠 줌을 값 축에도 적용'),
-      row('드래그로 이동', toggle(s.dragMode === 'pan', (v) => store.updateSettings({ dragMode: v ? 'pan' : 'zoom' }), '드래그 이동'), '끄면 드래그가 구간 확대'),
       row(
         '기본 최대 포인트',
         numInput(s.defaultMaxPoints, (v) => store.updateSettings({ defaultMaxPoints: Math.max(0, v ?? 0) }), '4000', '500'),
