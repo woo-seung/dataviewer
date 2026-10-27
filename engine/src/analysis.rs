@@ -61,13 +61,14 @@ pub fn for_each_aligned(cols: &[Col], start: f64, end: f64, mut f: impl FnMut(f6
 pub fn aligned(cols: &[Col], start: f64, end: f64, max_rows: usize) -> (usize, Vec<f64>, Vec<Vec<f64>>) {
     let mut total = 0usize;
     for_each_aligned(cols, start, end, |_, _| total += 1);
-    let step = if max_rows == 0 || total <= max_rows { 1 } else { total.div_ceil(max_rows) };
-    let cap = total / step + 1;
-    let mut time = Vec::with_capacity(cap);
-    let mut out: Vec<Vec<f64>> = cols.iter().map(|_| Vec::with_capacity(cap)).collect();
+    // exactly `max_rows` rows, evenly spread (row i is kept when i·max / total
+    // reaches the next whole number), not every k-th row
+    let keep = if max_rows == 0 || total <= max_rows { total } else { max_rows };
+    let mut time = Vec::with_capacity(keep);
+    let mut out: Vec<Vec<f64>> = cols.iter().map(|_| Vec::with_capacity(keep)).collect();
     let mut i = 0usize;
     for_each_aligned(cols, start, end, |t, row| {
-        if i % step == 0 {
+        if keep == total || (i as u128 * keep as u128) % (total as u128) < (keep as u128) {
             time.push(t);
             for (k, v) in row.iter().enumerate() {
                 out[k].push(*v);

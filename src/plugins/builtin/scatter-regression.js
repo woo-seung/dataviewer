@@ -5,15 +5,16 @@
 export default {
   id: 'scatter-regression',
   name: '산점도 + 회귀 (R²)',
-  version: '1.2.0',
+  version: '1.3.0',
   description: '두 열을 같은 시각끼리 짝지은 산점도와 회귀선, R²·기울기·절편 (0–1 정규화 선택)',
   params: {
     x: { type: 'column', label: 'X 열' },
     y: { type: 'column', label: 'Y 열' },
     fit: { type: 'boolean', label: '회귀선 표시', default: true },
     normalize: { type: 'boolean', label: 'X·Y 0–1 정규화', description: '최소–최대로 0–1 변환 후 회귀 (R²는 그대로, 기울기·절편과 1:1 R²가 바뀜)', default: false },
-    maxPoints: { type: 'number', label: '최대 점 수', default: 8000, min: 100, max: 100000, step: 100 },
+    maxPoints: { type: 'number', label: '최대 점 수', description: '이보다 많으면 시간 순서대로 고르게 솎아 그립니다', default: 8000, min: 100, max: 300000, step: 100 },
     pointSize: { type: 'number', label: '점 크기', default: 2, min: 0.5, max: 8, step: 0.5 },
+    opacity: { type: 'number', label: '점 불투명도 (0 = 자동)', description: '자동은 점이 많을수록 옅게 그려 겹친 곳이 진하게 보입니다', default: 0, min: 0, max: 1, step: 0.05 },
   },
   async render(ctx) {
     const { d3, el, width, height, params: p, theme, format } = ctx;
@@ -52,12 +53,21 @@ export default {
     const g2 = canvas.node().getContext('2d');
     g2.scale(dpr, dpr);
     g2.fillStyle = theme.palette[0];
-    g2.globalAlpha = xs.length > 3000 ? 0.45 : 0.75;
+    // more points → fainter, so stacked points read as density instead of one solid blob
+    g2.globalAlpha = p.opacity > 0 ? p.opacity : Math.max(0.06, Math.min(0.8, Math.sqrt(2500 / Math.max(1, xs.length))));
     const r = p.pointSize;
+    const many = xs.length > 30000;
+    // one fill per point so overlaps add up (a single path would fill them once)
     for (let i = 0; i < xs.length; i++) {
       if (!Number.isFinite(xs[i]) || !Number.isFinite(ys[i])) continue;
+      const cx = x(xs[i]);
+      const cy = y(ys[i]);
+      if (many) {
+        g2.fillRect(cx - r, cy - r, 2 * r, 2 * r); // squares: fast for very many points
+        continue;
+      }
       g2.beginPath();
-      g2.arc(x(xs[i]), y(ys[i]), r, 0, Math.PI * 2);
+      g2.arc(cx, cy, r, 0, Math.PI * 2);
       g2.fill();
     }
 
@@ -87,7 +97,7 @@ export default {
           `${p.normalize ? '정규화 ' : ''}y = ${format.number(fit.slope)}·x ${sign} ${format.number(Math.abs(fit.intercept))}`,
           `R² = ${fit.r2 === null ? '—' : fit.r2.toFixed(4)}`,
           ...(p.normalize && fit.r2Identity !== null ? [`1:1 R² = ${fit.r2Identity.toFixed(4)}`] : []),
-          `n = ${fit.n.toLocaleString()}${rows.total > xs.length ? ` (표시 ${xs.length.toLocaleString()})` : ''}`,
+          `n = ${fit.n.toLocaleString()}${rows.total > xs.length ? ` (표시 ${xs.length.toLocaleString()} / ${rows.total.toLocaleString()})` : ''}`,
         ];
     svg.append('text').attr('x', width - m.right).attr('y', 16).attr('text-anchor', 'end').attr('fill', theme.text).style('font-weight', 600).text(parts.join('   '));
     if (ctx.zoom) svg.append('text').attr('x', m.left).attr('y', 16).attr('fill', theme.faint).text('확대됨 · 더블클릭: 전체');
