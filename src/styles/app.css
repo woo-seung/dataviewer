@@ -2345,6 +2345,10 @@ body.is-dragging * {
   white-space: nowrap;
   font-weight: 600;
 }
+.anno-item-title.is-wrapped {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .anno-item-actions {
   display: flex;
   opacity: 0;

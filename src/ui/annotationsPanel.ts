@@ -81,7 +81,8 @@ export class AnnotationsPanel {
         { class: 'anno-item-head' },
         toggle,
         h('span', { class: `anno-kind is-${a.kind}` }),
-        h('div', { class: 'anno-item-title' }, noteTitle(a)),
+        // expanded: the whole first line, wrapped (collapsed: one line with …)
+        h('div', { class: `anno-item-title ${open ? 'is-wrapped' : ''}`, title: noteTitle(a) }, noteTitle(a)),
         h('div', { class: 'anno-item-actions' }, edit, del),
       ),
       h('div', { class: 'anno-item-when' }, whenText(a)),
