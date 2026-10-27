@@ -28,17 +28,30 @@ const EXPORT = 'Export.chronos';
 export interface Recent {
   id: string;
   name: string;
+  /** older entries for the same file (lists from earlier versions repeated one); their handles are fallbacks */
+  alts?: string[];
 }
 
 /** Recent workspaces, newest first, one entry per file name (older lists could repeat one). */
 function readRecent(): Recent[] {
   try {
     const list = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]') as Recent[];
-    const seen = new Set<string>();
-    return list.filter((r) => !seen.has(r.name) && (seen.add(r.name), true));
+    const out = new Map<string, Recent>();
+    for (const r of list) {
+      const first = out.get(r.name);
+      if (!first) out.set(r.name, { ...r });
+      else first.alts = [...new Set([...(first.alts ?? []), r.id, ...(r.alts ?? [])])];
+    }
+    return [...out.values()];
   } catch {
     return [];
   }
+}
+
+/** Entries another tab added (it shares the list) join ours, ours first. */
+function mergeRecent(ours: Recent[], theirs: Recent[]): Recent[] {
+  const names = new Set(ours.map((r) => r.name));
+  return [...ours, ...theirs.filter((r) => !names.has(r.name))];
 }
 
 function blankWorkspace(): Workspace {
@@ -124,6 +137,13 @@ class Project {
       }
     };
     await engine.clear();
+    await this.recoverRecent();
+    // another tab changed the shared list: show it here too
+    window.addEventListener('storage', (e) => {
+      if (e.key !== RECENT_KEY) return;
+      this.recent = readRecent();
+      this.changed();
+    });
     // the last named workspace reopens directly when the browser still allows
     // reading it; otherwise the Untitled autosave loads and a button offers it
     const last = localStorage.getItem(LAST_KEY);
@@ -168,7 +188,9 @@ class Project {
       localStorage.removeItem(LAST_KEY);
       return;
     }
-    // every entry for this file (same entry, or same file name) collapses into one
+    // every entry for this file (same entry, or same file name) collapses into one;
+    // old handles stay stored (another open tab may still list them)
+    this.recent = mergeRecent(this.recent, readRecent());
     const same: string[] = [];
     for (const r of this.recent) {
       const hd = await handles.get(`ws:${r.id}`);
@@ -176,7 +198,6 @@ class Project {
       if (match) same.push(r.id);
     }
     const id = same[0] ?? uid('ws');
-    for (const old of same.slice(1)) void handles.del(`ws:${old}`);
     await handles.set(`ws:${id}`, handle);
     this.recentId = id;
     this.recent = [{ id, name: handle.name }, ...this.recent.filter((r) => !same.includes(r.id))].slice(0, 12);
@@ -197,10 +218,43 @@ class Project {
   }
 
   forget(id: string) {
-    this.recent = this.recent.filter((r) => r.id !== id);
-    localStorage.setItem(RECENT_KEY, JSON.stringify(this.recent));
-    void handles.del(`ws:${id}`);
+    const r = this.recent.find((x) => x.id === id);
+    this.recent = this.recent.filter((x) => x.id !== id);
+    this.persistRecent();
+    for (const k of [id, ...(r?.alts ?? [])]) void handles.del(`ws:${k}`);
     this.changed();
+  }
+
+  /** The stored handle for a recent entry (its own, or one of an older duplicate). */
+  private async handleOf(r: Recent): Promise<FileSystemFileHandle | undefined> {
+    for (const k of [r.id, ...(r.alts ?? [])]) {
+      const hd = await handles.get(`ws:${k}`);
+      if (hd) {
+        if (k !== r.id) await handles.set(`ws:${r.id}`, hd);
+        return hd;
+      }
+    }
+    return undefined;
+  }
+
+  /** Workspace handles still stored but missing from the list (lost by an older version) come back. */
+  private async recoverRecent() {
+    const listed = new Set(this.recent.flatMap((r) => [r.id, ...(r.alts ?? [])]));
+    const names = new Set(this.recent.map((r) => r.name));
+    let added = false;
+    for (const key of await handles.keys()) {
+      const id = key.slice(3);
+      if (!key.startsWith('ws:') || listed.has(id)) continue;
+      const hd = await handles.get(key);
+      if (!hd || names.has(hd.name)) continue;
+      names.add(hd.name);
+      this.recent.push({ id, name: hd.name });
+      added = true;
+    }
+    if (added) {
+      this.recent = this.recent.slice(0, 12);
+      this.persistRecent();
+    }
   }
 
   /**
@@ -317,10 +371,14 @@ class Project {
   }
 
   async openRecent(r: Recent, quiet = false) {
-    const hd = await handles.get(`ws:${r.id}`);
-    if (!hd || !(await permitted(hd, 'read', true))) {
-      if (!hd) this.forget(r.id);
-      notice(`${r.name}: 파일에 접근할 수 없습니다.`, 5000, 'error');
+    const hd = await this.handleOf(r);
+    if (!hd) {
+      // the browser no longer has the file link: pick the file once more
+      askNotice(`${r.name}: 브라우저에 파일 연결 정보가 없습니다. 파일을 한 번 다시 골라 주세요.`, [['파일 찾기…', () => void this.openDialog()]]);
+      return;
+    }
+    if (!(await permitted(hd, 'read', true))) {
+      askNotice(`${r.name}: 파일 접근이 허용되지 않았습니다.`, [['다시 시도', () => void this.openRecent(r, quiet)]]);
       return;
     }
     try {

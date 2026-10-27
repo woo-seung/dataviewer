@@ -154,6 +154,7 @@ export const handles = {
   get: (key: string) => tx<FileSystemFileHandle>('readonly', (s) => s.get(key) as IDBRequest<FileSystemFileHandle>),
   set: (key: string, h: FileSystemFileHandle) => tx('readwrite', (s) => s.put(h, key)),
   del: (key: string) => tx('readwrite', (s) => s.delete(key)),
+  keys: async () => ((await tx('readonly', (s) => s.getAllKeys())) ?? []).map(String),
 };
 
 /** Dropped files, with handles where the browser provides them. Must be called inside the drop event. */

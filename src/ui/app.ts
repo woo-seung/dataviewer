@@ -184,7 +184,8 @@ export class App {
     const label = project.untitled ? 'Untitled (자동 보관)' : project.name;
     this.status.file.textContent = `${label}${project.saving ? ' · 저장 중…' : project.dirty ? ' ●' : ''}`;
     this.status.file.title = project.dirty ? '저장되지 않은 변경 (Ctrl+S)' : project.untitled ? '작업은 브라우저 저장소에 자동 보관됩니다. Ctrl+S로 원하는 위치에 저장하세요.' : '';
-    const title = `${project.title}${project.dirty ? ' •' : ''} — Chronos Vault`;
+    // "*" up front (visible in a narrow browser tab) while there are unsaved changes
+    const title = `${project.dirty ? '* ' : ''}${project.title} — Chronos Vault`;
     document.title = title;
   }
 
