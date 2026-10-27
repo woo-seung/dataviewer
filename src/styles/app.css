@@ -2338,16 +2338,13 @@ body.is-dragging * {
   border-radius: 2px;
 }
 .anno-item-title {
+  cursor: pointer;
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-}
-.anno-item-title.is-wrapped {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 .anno-item-actions {
   display: flex;
@@ -2369,6 +2366,7 @@ body.is-dragging * {
 }
 .anno-item-note {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   margin: 6px 0 4px 22px;
 }
 .anno-item .anno-values {

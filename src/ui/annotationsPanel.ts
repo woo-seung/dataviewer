@@ -64,11 +64,18 @@ export class AnnotationsPanel {
     const w = ws ? store.widget(ws.id, a.widgetId) : null;
     const where = `${ws?.name ?? `${a.sheetName} (삭제됨)`} › ${w?.title ?? `${a.widgetTitle} (삭제됨)`}`;
     const open = this.expanded.has(a.id);
-    const toggle = iconButton(ChevronRight, open ? '접기' : '자세히 (메모 전체, 데이터)', () => {
+    const flip = () => {
       if (open) this.expanded.delete(a.id);
       else this.expanded.add(a.id);
       this.render();
-    }, `clickable-icon anno-expand ${open ? 'is-open' : ''}`, 14);
+    };
+    const toggle = iconButton(ChevronRight, open ? '접기' : '자세히 (메모 전체, 데이터)', flip, `clickable-icon anno-expand ${open ? 'is-open' : ''}`, 14);
+    // the one-line title opens / closes the full note (the rest of the card goes to the view)
+    const title = h('div', { class: 'anno-item-title', title: open ? '클릭: 접기' : '클릭: 메모 전체 보기' }, noteTitle(a));
+    title.addEventListener('click', (e) => {
+      e.stopPropagation();
+      flip();
+    });
     const edit = iconButton(Pencil, '편집', (e) => openAnnotationEditor(a, { x: e.clientX - 300, y: e.clientY }, false), 'clickable-icon', 14);
     const del = iconButton(Trash2, '삭제', async () => {
       if (await confirmDialog('주석 삭제', `"${noteTitle(a)}" 주석을 삭제할까요?`, '삭제')) store.removeAnnotation(a.id);
@@ -81,15 +88,14 @@ export class AnnotationsPanel {
         { class: 'anno-item-head' },
         toggle,
         h('span', { class: `anno-kind is-${a.kind}` }),
-        // expanded: the whole first line, wrapped (collapsed: one line with …)
-        h('div', { class: `anno-item-title ${open ? 'is-wrapped' : ''}`, title: noteTitle(a) }, noteTitle(a)),
+        title,
         h('div', { class: 'anno-item-actions' }, edit, del),
       ),
       h('div', { class: 'anno-item-when' }, whenText(a)),
       h('div', { class: 'anno-item-where' }, where),
       ...(open
         ? [
-            ...(a.note.includes('\n') ? [h('div', { class: 'anno-item-note' }, a.note.split('\n').slice(1).join('\n').trim())] : []),
+            ...(a.note.trim() ? [h('div', { class: 'anno-item-note' }, a.note.trim())] : []),
             ...(a.view.snapshot ? [h('img', { class: 'anno-shot', src: a.view.snapshot, alt: '주석을 달 때의 차트' })] : []),
             ...(a.values.length ? [valuesTable(a, 50)] : []),
             h('div', { class: 'anno-item-meta' }, `작성 ${new Date(a.createdAt).toLocaleString()}${a.updatedAt && a.updatedAt - a.createdAt > 60_000 ? ` · 수정 ${new Date(a.updatedAt).toLocaleString()}` : ''}`),
