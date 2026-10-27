@@ -556,16 +556,18 @@ export class ChartWidget {
       this.mouseY = null;
       setTimeout(() => store.cursor(this.wsId, null, this.id), 0);
     });
-    this.plotHost.addEventListener(
+    // anywhere over the widget (header, legend, axes): plain wheel scrolls the
+    // worksheet; Ctrl (or a trackpad pinch) zooms the time axis, around the
+    // cursor over the plot and around the middle elsewhere; Shift pans it.
+    // Plugin charts do the same inside their frame.
+    this.el.addEventListener(
       'wheel',
       (e) => {
-        const u = this.u;
-        if (!u || !(e.target as HTMLElement).closest('.u-over')) return;
-        // plain wheel scrolls the worksheet; Ctrl (or a trackpad pinch) zooms
-        // the time axis; Shift pans it
         const zoom = e.ctrlKey || e.metaKey;
         if (!zoom && !e.shiftKey) return;
-        e.preventDefault();
+        e.preventDefault(); // never the browser's page zoom
+        const u = this.u;
+        if (!u || this.state?.plugin) return;
         const { start, end } = this.curRange;
         if (!zoom) {
           // browsers may report Shift+wheel as horizontal scrolling
@@ -574,7 +576,8 @@ export class ChartWidget {
           return;
         }
         const r = u.over.getBoundingClientRect();
-        const c = u.posToVal(e.clientX - r.left, 'x');
+        const over = e.clientX >= r.left && e.clientX <= r.right;
+        const c = over ? u.posToVal(e.clientX - r.left, 'x') : (start + end) / 2;
         const f = Math.pow(1.0015, Math.max(-300, Math.min(300, e.deltaY * (e.deltaMode === 1 ? 33 : 1))));
         this.setRange({ start: c - (c - start) * f, end: c + (end - c) * f });
       },

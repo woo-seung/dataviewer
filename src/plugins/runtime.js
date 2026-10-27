@@ -170,6 +170,73 @@
     root.addEventListener('pointercancel', up);
     root.addEventListener('lostpointercapture', up);
   });
+  // Ctrl+wheel zooms around the cursor, Shift+wheel pans (the plain wheel
+  // scrolls the worksheet); drawn live, kept once the wheel rests
+  let wheelZoom = null;
+  let wheelCfg = null;
+  let wheelTimer = 0;
+  let wheelDrawing = false;
+  let wheelAgain = false;
+  const wheelDraw = async () => {
+    if (wheelDrawing) {
+      wheelAgain = true;
+      return;
+    }
+    wheelDrawing = true;
+    do {
+      wheelAgain = false;
+      if (lastRender && wheelZoom) await render({ ...lastRender, zoom: wheelZoom }, true);
+    } while (wheelAgain);
+    wheelDrawing = false;
+  };
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      const zoom = e.ctrlKey || e.metaKey;
+      if (!zoom && !e.shiftKey) return;
+      e.preventDefault(); // no page zoom / sideways scroll
+      // a live re-draw clears zoomCfg for a moment: use the one before
+      const cfg = zoomCfg || wheelCfg;
+      if (!cfg) return;
+      wheelCfg = cfg;
+      const a = cfg.area;
+      const r = root.getBoundingClientRect();
+      // the cursor's place in the plot (its middle when outside it)
+      const px = Math.max(0, Math.min(a.width, e.clientX - r.left - a.left));
+      const py = Math.max(0, Math.min(a.height, e.clientY - r.top - a.top));
+      const inside = e.clientX - r.left >= a.left && e.clientX - r.left <= a.left + a.width && e.clientY - r.top >= a.top && e.clientY - r.top <= a.top + a.height;
+      const cx = inside ? px : a.width / 2;
+      const cy = inside ? py : a.height / 2;
+      // linear axes: the value under the cursor stays put
+      const cur = wheelZoom || currentZoom || {};
+      const xd = cfg.x ? cur.x || cfg.x.domain() : null;
+      const yd = cfg.y ? cur.y || cfg.y.domain() : null;
+      const step = (e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 33 : 1);
+      const next = { x: cur.x || null, y: cur.y || null };
+      if (zoom) {
+        const f = Math.pow(1.0015, Math.max(-300, Math.min(300, step)));
+        const around = ([lo, hi], t) => {
+          const c = lo + t * (hi - lo);
+          return [c - (c - lo) * f, c + (hi - c) * f];
+        };
+        if (xd) next.x = around(xd, cx / a.width);
+        if (yd) next.y = around(yd, 1 - cy / a.height);
+      } else if (xd) {
+        const d = (xd[1] - xd[0]) * step * 0.0015;
+        next.x = [xd[0] + d, xd[1] + d];
+      } else return;
+      wheelZoom = next;
+      void wheelDraw();
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(() => {
+        const z = wheelZoom;
+        wheelZoom = null;
+        wheelCfg = null;
+        if (z) post({ type: 'zoom', zoom: z });
+      }, 300);
+    },
+    { passive: false },
+  );
   root.addEventListener('dblclick', (e) => {
     if (zoomCfg && currentZoom && local(e)) post({ type: 'zoom', zoom: null });
   });
