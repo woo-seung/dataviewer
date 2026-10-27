@@ -76,6 +76,7 @@ export default {
 | \`state\` | 렌더 사이에 유지되는 빈 객체 (캐시 등) |
 | \`zoom\` | 사용자가 확대/이동한 보기 \`{ x: [min, max] \| null, y: [min, max] \| null }\` (데이터 단위) 또는 null — 있으면 축 domain으로 쓰세요 |
 | \`enableZoom({ x, y, area })\` | 그린 뒤 호출하면 **드래그 = 이동, Ctrl+드래그 = 박스 확대, Ctrl+휠 = 커서 기준 확대/축소, Shift+휠 = 좌우 이동, 더블클릭 = 전체** 가 켜집니다. x·y는 d3 연속 스케일(\`invert\` 필요, 한쪽만 줘도 됨), area는 \`{ left, top, width, height }\` = ctx.el 기준 플롯 영역(스케일 range는 이 영역 안 좌표 0…width / height…0). 연속 축이 있는 차트라면 꼭 호출하세요 |
+| \`hoverPoints({ x, y, xScale, yScale, area, label })\` | 그린 점들을 등록하면 커서가 가까이(14px) 가면 그 점에 표시를 하고 \`label(i)\`가 돌려준 HTML(이름·값·시각 등)을 커서 옆에 띄웁니다. x·y = 데이터 값 배열, xScale·yScale = 그린 스케일, area = enableZoom과 같은 플롯 영역. 점·선 그래프라면 꼭 호출하세요 (크로스헤어는 enableZoom만 하면 자동) |
 | \`d3\` | d3 v7 |
 
 ## 4. ctx.data — 데이터 (엔진이 전체 데이터에서 계산, 결과만 전달)
@@ -103,6 +104,7 @@ export default {
 - 크기가 작아도(예: 240×150) 깨지지 않게 여백을 계산하세요.
 - 예외는 던져도 됩니다 (위젯에 오류로 표시됨). 하지만 열이 비었을 때는 안내 문구로 처리하세요.
 - 시간 범위가 바뀌면 다시 그려지므로, 보이는 범위 기준으로 계산하는 것이 기본입니다.
+- 점 툴팁은 \`ctx.hoverPoints\`로 (막대·셀처럼 영역이 있는 그래프는 \`ctx.tooltip\`을 직접 써도 됩니다).
 - 확대/이동은 직접 구현하지 말고 \`ctx.zoom\` + \`ctx.enableZoom\`을 쓰세요 (앱 전체와 같은 조작: 드래그 = 이동, Ctrl+드래그 = 확대, Ctrl+휠 = 확대/축소).
 
 ## 6. 완전한 예제 (내장 "산점도 + 회귀" 플러그인)

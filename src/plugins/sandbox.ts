@@ -40,6 +40,11 @@ svg{display:block}
 .chronos-tooltip{position:fixed;display:none;pointer-events:none;z-index:9;padding:4px 8px;border-radius:4px;background:var(--tooltip-bg);color:var(--text);border:1px solid var(--grid);font-size:11px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25)}
 .chronos-zoom-box{position:absolute;border:1px dashed var(--accent);background:color-mix(in srgb,var(--accent) 15%,transparent);pointer-events:none;z-index:8}
 #root{user-select:none;-webkit-user-select:none}
+.chronos-cross-v,.chronos-cross-h{position:absolute;display:none;pointer-events:none;z-index:6}
+.chronos-cross-v{width:0;border-left:1px dashed var(--faint)}
+.chronos-cross-h{height:0;border-top:1px dashed var(--faint)}
+.chronos-cross-label{position:absolute;display:none;pointer-events:none;z-index:7;font:10.5px ui-monospace,monospace;padding:1px 5px;border-radius:3px;white-space:nowrap;background:var(--text);color:var(--background)}
+.chronos-point{position:absolute;display:none;pointer-events:none;z-index:7;width:9px;height:9px;margin:-6px 0 0 -6px;border-radius:50%;border:2px solid var(--accent);background:var(--background)}
 .chronos-error{margin:8px;padding:8px;white-space:pre-wrap;color:#e93147;font:11px/1.4 ui-monospace,monospace;overflow:auto;max-height:calc(100% - 16px)}
 </style>
 <script>window.__loadErrors=[];addEventListener('error',function(e){window.__loadErrors.push(e.message)});</script>
@@ -131,7 +136,7 @@ export class PluginFrame {
     }
   }
 
-  async render(msg: { params: unknown; width: number; height: number; range: { start: number; end: number } | null; zoom: PluginZoom | null }) {
+  async render(msg: { params: unknown; width: number; height: number; range: { start: number; end: number } | null; zoom: PluginZoom | null; crosshair?: boolean }) {
     await this.ready;
     this.iframe.contentWindow?.postMessage({ type: 'render', ...msg, theme: pluginTheme() }, '*');
   }

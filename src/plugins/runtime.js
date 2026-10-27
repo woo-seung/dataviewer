@@ -237,6 +237,84 @@
     },
     { passive: false },
   );
+  // ---- crosshair + nearest point (any plugin that called enableZoom / hoverPoints) ----
+  let hoverCfg = null;
+  let showCross = true;
+  let dragging = false;
+  let tipOwned = false;
+  const overlay = {};
+  const part = (key, cls) => {
+    let el = overlay[key];
+    if (!el || !el.isConnected) {
+      el = overlay[key] = document.createElement('div');
+      el.className = cls;
+      root.appendChild(el);
+    }
+    return el;
+  };
+  const hideHover = () => {
+    for (const el of Object.values(overlay)) el.style.display = 'none';
+    if (tipOwned) tooltip.hide();
+    tipOwned = false;
+  };
+  root.addEventListener('pointermove', (e) => {
+    if (dragging || e.buttons) return hideHover();
+    const cfg = zoomCfg || (hoverCfg && hoverCfg.area ? { area: hoverCfg.area } : null);
+    const p = local(e) || (hoverCfg && !zoomCfg ? localIn(e, hoverCfg.area) : null);
+    if (!cfg || !p) return hideHover();
+    const a = cfg.area;
+    if (showCross && zoomCfg) {
+      Object.assign(part('v', 'chronos-cross-v').style, { display: 'block', left: `${a.left + p.x}px`, top: `${a.top}px`, height: `${a.height}px` });
+      Object.assign(part('h', 'chronos-cross-h').style, { display: 'block', top: `${a.top + p.y}px`, left: `${a.left}px`, width: `${a.width}px` });
+      const xl = part('xl', 'chronos-cross-label');
+      const yl = part('yl', 'chronos-cross-label');
+      if (zoomCfg.x) {
+        xl.textContent = format.number(zoomCfg.x.invert(p.x));
+        xl.style.display = 'block';
+        xl.style.left = `${Math.max(a.left, Math.min(a.left + a.width - xl.offsetWidth, a.left + p.x - xl.offsetWidth / 2))}px`;
+        xl.style.top = `${a.top + a.height + 2}px`;
+      } else xl.style.display = 'none';
+      if (zoomCfg.y) {
+        yl.textContent = format.number(zoomCfg.y.invert(p.y));
+        yl.style.display = 'block';
+        yl.style.left = `${a.left + 2}px`;
+        yl.style.top = `${a.top + p.y - 9}px`;
+      } else yl.style.display = 'none';
+    }
+    // nearest registered point within reach: its name, values, time beside the cursor
+    const dot = part('dot', 'chronos-point');
+    const hit = hoverCfg ? hoverCfg.tree.find(p.x, p.y, 14) : undefined;
+    if (hit === undefined) {
+      dot.style.display = 'none';
+      if (tipOwned) tooltip.hide();
+      tipOwned = false;
+      return;
+    }
+    const [hx, hy, i] = hit;
+    Object.assign(dot.style, { display: 'block', left: `${hoverCfg.area.left + hx}px`, top: `${hoverCfg.area.top + hy}px` });
+    let html = '';
+    try {
+      html = hoverCfg.label(i);
+    } catch (err) {
+      html = String(err && err.message);
+    }
+    const r = root.getBoundingClientRect();
+    tooltip.show(r.left + hoverCfg.area.left + hx, r.top + hoverCfg.area.top + hy, html);
+    tipOwned = true;
+  });
+  root.addEventListener('pointerleave', hideHover);
+  root.addEventListener('pointerdown', () => {
+    dragging = true;
+    hideHover();
+  });
+  window.addEventListener('pointerup', () => (dragging = false));
+  const localIn = (e, a) => {
+    const r = root.getBoundingClientRect();
+    const x = e.clientX - r.left - a.left;
+    const y = e.clientY - r.top - a.top;
+    return x >= 0 && y >= 0 && x <= a.width && y <= a.height ? { x, y } : null;
+  };
+
   root.addEventListener('dblclick', (e) => {
     if (zoomCfg && currentZoom && local(e)) post({ type: 'zoom', zoom: null });
   });
@@ -273,6 +351,9 @@
     root.innerHTML = '';
     zoomCfg = null;
     currentZoom = m.zoom || null;
+    hoverCfg = null;
+    showCross = m.crosshair !== false;
+    tipOwned = false;
     const ctx = {
       el: root,
       width: m.width,
@@ -288,6 +369,18 @@
       signal: ac.signal,
       setRange: (start, end) => post({ type: 'setRange', start, end }),
       zoom: currentZoom,
+      hoverPoints(cfg) {
+        // points in data units on the given scales; a quadtree finds the nearest
+        if (!cfg || !cfg.x || !cfg.y || !cfg.xScale || !cfg.yScale || !cfg.area || typeof cfg.label !== 'function') return;
+        const n = Math.min(cfg.x.length, cfg.y.length);
+        const pts = [];
+        for (let i = 0; i < n; i++) {
+          const px = cfg.xScale(cfg.x[i]);
+          const py = cfg.yScale(cfg.y[i]);
+          if (Number.isFinite(px) && Number.isFinite(py) && px >= 0 && py >= 0 && px <= cfg.area.width && py <= cfg.area.height) pts.push([px, py, i]);
+        }
+        hoverCfg = { tree: window.d3.quadtree(pts), label: cfg.label, area: cfg.area };
+      },
       enableZoom(cfg) {
         if (!cfg || !cfg.area || (!cfg.x && !cfg.y)) return;
         zoomCfg = { x: cfg.x && cfg.x.invert ? cfg.x : null, y: cfg.y && cfg.y.invert ? cfg.y : null, area: cfg.area };

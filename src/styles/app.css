@@ -942,6 +942,53 @@ body.is-dragging .tile-gutter {
   background: var(--text-normal);
   color: var(--background-primary);
 }
+.point-tip {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 6;
+  padding: 5px 8px;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary-alt);
+  border: 1px solid var(--background-modifier-border-hover);
+  box-shadow: var(--shadow-s);
+  font-size: 11.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.point-tip-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+}
+.point-tip-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.point-tip-value {
+  font-weight: 600;
+  font-family: var(--font-monospace);
+  color: var(--text-normal);
+}
+.point-tip-time {
+  font-family: var(--font-monospace);
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+.point-dot {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 5;
+  width: 9px;
+  height: 9px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  border: 2px solid;
+  background: var(--background-primary);
+}
 .crosshair-label.is-y {
   opacity: 0.9;
 }

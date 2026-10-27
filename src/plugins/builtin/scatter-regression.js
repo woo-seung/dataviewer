@@ -5,7 +5,7 @@
 export default {
   id: 'scatter-regression',
   name: '산점도 + 회귀 (R²)',
-  version: '1.1.0',
+  version: '1.2.0',
   description: '두 열을 같은 시각끼리 짝지은 산점도와 회귀선, R²·기울기·절편 (0–1 정규화 선택)',
   params: {
     x: { type: 'column', label: 'X 열' },
@@ -93,6 +93,13 @@ export default {
     if (ctx.zoom) svg.append('text').attr('x', m.left).attr('y', 16).attr('fill', theme.faint).text('확대됨 · 더블클릭: 전체');
 
     // drag = pan, Ctrl+drag = box zoom, double-click = fit
-    ctx.enableZoom({ x, y, area: { left: m.left, top: m.top, width: w, height: h } });
+    const area = { left: m.left, top: m.top, width: w, height: h };
+    ctx.enableZoom({ x, y, area });
+    // hovering near a point: its time and both values (as measured, also when normalized)
+    const [rx, ry] = rows.columns;
+    ctx.hoverPoints({
+      x: xs, y: ys, xScale: x, yScale: y, area,
+      label: (i) => `${format.time(rows.t[i], true)}<br>${p.x.label}: <b>${format.number(rx[i])}</b><br>${p.y.label}: <b>${format.number(ry[i])}</b>`,
+    });
   },
 };

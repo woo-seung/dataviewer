@@ -152,6 +152,8 @@ export class ChartWidget {
   private hline: HTMLElement;
   private xLabel: HTMLElement;
   private yLabel: HTMLElement;
+  private pointTip: HTMLElement;
+  private pointDot: HTMLElement;
   private mouseY: number | null = null;
   private lastCursor: number | null = null;
   private valueCells: HTMLElement[] = [];
@@ -214,6 +216,8 @@ export class ChartWidget {
     this.hline = h('div', { class: 'crosshair-h' });
     this.xLabel = h('div', { class: 'crosshair-label is-x' });
     this.yLabel = h('div', { class: 'crosshair-label is-y' });
+    this.pointTip = h('div', { class: 'point-tip' });
+    this.pointDot = h('div', { class: 'point-dot' });
     this.empty = h('div', { class: 'widget-empty' }, icon(ChartLine, 28), h('div', {}, '사이드바에서 시리즈를 여기로 드래그하세요'));
     this.missing = h('div', { class: 'widget-missing' });
     this.annoLayer = h('div', { class: 'anno-layer' });
@@ -223,7 +227,7 @@ export class ChartWidget {
       store.setAnnotating(false);
       void this.createChartAnnotation({ x: e.clientX, y: e.clientY });
     });
-    this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.pluginHost, this.annoLayer, this.vline, this.hline, this.xLabel, this.yLabel, this.empty, this.missing);
+    this.plotWrap = h('div', { class: 'widget-plot' }, this.plotHost, this.pluginHost, this.annoLayer, this.vline, this.hline, this.xLabel, this.yLabel, this.pointDot, this.pointTip, this.empty, this.missing);
     this.legend = h('div', { class: 'widget-legend' });
     this.content = h('div', { class: 'widget' }, header, h('div', { class: 'widget-body' }, this.plotWrap, this.legend));
     this.dropZone = h('div', { class: 'tile-drop-zone' });
@@ -631,7 +635,7 @@ export class ChartWidget {
     const w = this.pluginHost.clientWidth;
     const hgt = this.pluginHost.clientHeight;
     if (w < 10 || hgt < 10) return;
-    void this.frame.render({ params: resolveParams(rec, spec.params), width: w, height: hgt, range: store.widgetRange(this.wsId, st), zoom: spec.zoom ?? null });
+    void this.frame.render({ params: resolveParams(rec, spec.params), width: w, height: hgt, range: store.widgetRange(this.wsId, st), zoom: spec.zoom ?? null, crosshair: store.sheet(this.wsId)?.crosshair !== false });
     this.drawAnnotations();
   }
 
@@ -989,6 +993,7 @@ export class ChartWidget {
       this.hline.style.display = 'none';
       this.xLabel.style.display = 'none';
       this.yLabel.style.display = 'none';
+      this.hidePointTip();
     };
     if (x === null || !u) {
       hide();
@@ -1004,12 +1009,17 @@ export class ChartWidget {
       return;
     }
     this.updateCursorValues(x);
-    if (!showLines) return hide();
     // overlay lives in plotWrap; translate from the plotting area's origin
     const wr = this.plotWrap.getBoundingClientRect();
     const or = u.over.getBoundingClientRect();
     const ox = or.left - wr.left;
     const oy = or.top - wr.top;
+    if (own && this.mouseY !== null) this.drawPointTip(u, px, this.mouseY, ox, oy);
+    else this.hidePointTip();
+    if (!showLines) {
+      this.vline.style.display = this.hline.style.display = this.xLabel.style.display = this.yLabel.style.display = 'none';
+      return;
+    }
     const left = ox + px;
     Object.assign(this.vline.style, { display: 'block', left: `${left}px`, top: `${oy}px`, height: `${H}px` });
     this.xLabel.textContent = formatTime(x);
@@ -1028,6 +1038,59 @@ export class ChartWidget {
       this.hline.style.display = 'none';
       this.yLabel.style.display = 'none';
     }
+  }
+
+  private hidePointTip() {
+    this.pointTip.style.display = 'none';
+    this.pointDot.style.display = 'none';
+  }
+
+  /** Name, value and time of the data point nearest the cursor (within a few px), beside it. */
+  private drawPointTip(u: uPlot, px: number, py: number, ox: number, oy: number) {
+    const R = 14;
+    const xs = u.data[0] as number[];
+    if (!xs?.length) return this.hidePointTip();
+    let lo = Math.max(0, (u.posToIdx(px - R) ?? 0) - 1);
+    const hi = Math.min(xs.length - 1, (u.posToIdx(px + R) ?? xs.length - 1) + 1);
+    // very dense data: look at an even sample of the window
+    const stride = Math.max(1, Math.floor((hi - lo) / 600));
+    let best = R * R;
+    let hit: { i: number; j: number; x: number; y: number } | null = null;
+    for (let i = 1; i < u.series.length; i++) {
+      const se = u.series[i];
+      if (!se.show) continue;
+      const ys = u.data[i] as (number | null)[];
+      for (let j = lo; j <= hi; j += stride) {
+        const v = ys[j];
+        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        const dx = u.valToPos(xs[j], 'x') - px;
+        const dy = u.valToPos(v, se.scale ?? 'y') - py;
+        const d = dx * dx + dy * dy;
+        if (d < best) {
+          best = d;
+          hit = { i, j, x: dx + px, y: dy + py };
+        }
+      }
+    }
+    if (!hit) return this.hidePointTip();
+    const se = u.series[hit.i];
+    const color = typeof se.stroke === 'function' ? cssVar('--text-normal') : String(se.stroke ?? '');
+    const y = this.state.yAxis;
+    this.pointTip.replaceChildren(
+      h('div', { class: 'point-tip-name' }, h('span', { class: 'point-tip-swatch', style: `background:${color}` }), String(se.label ?? '')),
+      h('div', { class: 'point-tip-value' }, formatValue(u.data[hit.i][hit.j] as number, y.siPrefix, y.unit)),
+      h('div', { class: 'point-tip-time' }, formatTime(xs[hit.j])),
+    );
+    Object.assign(this.pointDot.style, { display: 'block', left: `${ox + hit.x}px`, top: `${oy + hit.y}px`, borderColor: color });
+    const tip = this.pointTip;
+    tip.style.display = 'block';
+    const W = this.plotWrap.clientWidth;
+    const H = this.plotWrap.clientHeight;
+    let left = ox + hit.x + 12;
+    let top = oy + hit.y + 12;
+    if (left + tip.offsetWidth > W - 4) left = ox + hit.x - tip.offsetWidth - 12;
+    if (top + tip.offsetHeight > H - 4) top = oy + hit.y - tip.offsetHeight - 12;
+    Object.assign(tip.style, { left: `${Math.max(2, left)}px`, top: `${Math.max(2, top)}px` });
   }
 
   private updateCursorValues(x: number | null) {
