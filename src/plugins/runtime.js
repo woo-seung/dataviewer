@@ -68,6 +68,8 @@
   // ---- zoom / pan (plugins opt in with ctx.enableZoom) ----
   let zoomCfg = null;
   let currentZoom = null;
+  /** the last render request, re-drawn locally with a moving zoom while panning */
+  let lastRender = null;
   const local = (e) => {
     if (!zoomCfg) return null;
     const r = root.getBoundingClientRect();
@@ -92,6 +94,34 @@
       mark.className = 'chronos-zoom-box';
       root.appendChild(mark);
     } else root.style.cursor = 'grabbing';
+    // pan: re-draw with the dragged window (axes included), one frame at a time
+    let drawing = false;
+    let want = null;
+    const startZoom = currentZoom;
+    const panZoom = (ev) => {
+      const keep = startZoom || {};
+      const dx = cfg.x ? ev.clientX - e.clientX : 0;
+      const dy = cfg.y ? ev.clientY - e.clientY : 0;
+      // the visible window moves opposite to the drag
+      return {
+        dx,
+        dy,
+        zoom: {
+          x: cfg.x ? sorted(cfg.x.invert(-dx), cfg.x.invert(a.width - dx)) : keep.x || null,
+          y: cfg.y ? sorted(cfg.y.invert(a.height - dy), cfg.y.invert(-dy)) : keep.y || null,
+        },
+      };
+    };
+    const live = async () => {
+      if (drawing || !want || !lastRender) return;
+      drawing = true;
+      const z = want;
+      want = null;
+      await render({ ...lastRender, zoom: z }, true);
+      root.style.cursor = 'grabbing';
+      drawing = false;
+      void live();
+    };
     const move = (ev) => {
       const r = root.getBoundingClientRect();
       p1 = { x: Math.max(0, Math.min(a.width, ev.clientX - r.left - a.left)), y: Math.max(0, Math.min(a.height, ev.clientY - r.top - a.top)) };
@@ -100,9 +130,8 @@
         const [y0, y1] = cfg.y ? sorted(p0.y, p1.y) : [0, a.height];
         Object.assign(mark.style, { left: `${a.left + x0}px`, top: `${a.top + y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
       } else {
-        const dx = cfg.x ? ev.clientX - e.clientX : 0;
-        const dy = cfg.y ? ev.clientY - e.clientY : 0;
-        for (const c of root.children) if (c !== tip) c.style.transform = `translate(${dx}px,${dy}px)`;
+        want = panZoom(ev).zoom;
+        void live();
       }
     };
     const up = (ev) => {
@@ -111,7 +140,8 @@
       root.removeEventListener('pointercancel', up);
       root.style.cursor = '';
       if (mark) mark.remove();
-      const keep = currentZoom || {};
+      want = null;
+      const keep = (box ? currentZoom : startZoom) || {};
       if (box) {
         const wx = Math.abs(p1.x - p0.x);
         const wy = Math.abs(p1.y - p0.y);
@@ -120,16 +150,13 @@
         if ((cfg.x && wx > 4) || (cfg.y && wy > 4)) post({ type: 'zoom', zoom: { x: zx, y: zy } });
         return;
       }
-      const dx = cfg.x ? ev.clientX - e.clientX : 0;
-      const dy = cfg.y ? ev.clientY - e.clientY : 0;
+      const { dx, dy, zoom } = panZoom(ev);
       if (Math.abs(dx) + Math.abs(dy) < 3) {
-        for (const c of root.children) c.style.transform = '';
+        // a click: put back the view the drag started from
+        if (currentZoom !== startZoom && lastRender) void render({ ...lastRender, zoom: startZoom }, true);
         return;
       }
-      // the visible window moves opposite to the drag
-      const zx = cfg.x ? sorted(cfg.x.invert(-dx), cfg.x.invert(a.width - dx)) : keep.x || null;
-      const zy = cfg.y ? sorted(cfg.y.invert(a.height - dy), cfg.y.invert(-dy)) : keep.y || null;
-      post({ type: 'zoom', zoom: { x: zx, y: zy } });
+      post({ type: 'zoom', zoom });
     };
     root.addEventListener('pointermove', move);
     root.addEventListener('pointerup', up);
@@ -159,7 +186,8 @@
 
   const manifest = (p) => JSON.parse(JSON.stringify({ id: p.id, name: p.name, version: p.version, description: p.description, author: p.author, params: p.params || {} }));
 
-  async function render(m) {
+  async function render(m, live = false) {
+    if (!live) lastRender = m;
     current?.abort();
     const ac = new AbortController();
     current = ac;
@@ -193,7 +221,7 @@
     };
     try {
       await plugin().render(ctx);
-      if (!ac.signal.aborted) post({ type: 'rendered' });
+      if (!ac.signal.aborted && !live) post({ type: 'rendered' });
     } catch (e) {
       if (!ac.signal.aborted) showError(e);
     }
