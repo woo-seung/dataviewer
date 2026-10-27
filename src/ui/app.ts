@@ -365,6 +365,14 @@ export class App {
         void (e.shiftKey ? actions.openCsv() : actions.openWorkspace());
         return;
       }
+      // Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y): undo / redo workspace changes; text fields keep their own
+      if (mod && !e.altKey && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+        if (typing || document.querySelector('.modal-container')) return;
+        e.preventDefault();
+        const redo = e.key.toLowerCase() === 'y' || e.shiftKey;
+        if (!store.undo(redo)) notice(redo ? '다시 실행할 작업이 없습니다.' : '되돌릴 작업이 없습니다.', 1500);
+        return;
+      }
       if (mod && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         void actions.newWorkspace();

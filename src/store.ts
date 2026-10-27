@@ -94,6 +94,14 @@ class Store {
   ws: Workspace;
   private handlers = new Map<keyof Events, Set<Handler<never>>>();
   private history = new Map<string, History>();
+  // undo / redo (Ctrl+Z / Ctrl+Shift+Z): snapshots of the workspace content,
+  // a burst of changes (a wheel zoom, a drag) settling into one step
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private committed = '';
+  private restoring = false;
+  private quietUntil = 0;
+  private undoTimer = 0;
 
   /** Hook for the project layer (dirty tracking). */
   onChange?: (ev: keyof Events) => void;
@@ -102,6 +110,7 @@ class Store {
 
   constructor() {
     this.ws = this.load();
+    this.committed = this.snapshot();
   }
 
   // ---------- events ----------
@@ -115,7 +124,71 @@ class Store {
     if (ev !== 'cursor' && ev !== 'selection' && ev !== 'project' && ev !== 'annotating') {
       this.save();
       this.onChange?.(ev);
+      if (!this.restoring && ev !== 'settings' && ev !== 'active') {
+        clearTimeout(this.undoTimer);
+        this.undoTimer = window.setTimeout(() => this.commitUndo(), 500);
+      }
     }
+  }
+
+  // ---------- undo / redo ----------
+  private snapshot(): string {
+    const { worksheets, annotations, plugins, activeId } = this.ws;
+    return JSON.stringify({ worksheets, annotations, plugins, activeId });
+  }
+
+  private commitUndo() {
+    clearTimeout(this.undoTimer);
+    const now = this.snapshot();
+    if (now === this.committed) return;
+    // views settling right after an undo (layout fixes) are not a new step
+    if (Date.now() < this.quietUntil) {
+      this.committed = now;
+      return;
+    }
+    this.undoStack.push(this.committed);
+    if (this.undoStack.length > 100) this.undoStack.shift();
+    this.redoStack = [];
+    this.committed = now;
+  }
+
+  private resetUndo() {
+    clearTimeout(this.undoTimer);
+    this.undoStack = [];
+    this.redoStack = [];
+    this.committed = this.snapshot();
+  }
+
+  /** Step back (true) or forward (false); false when there is nothing to do. */
+  undo(redo = false): boolean {
+    this.commitUndo();
+    const from = redo ? this.redoStack : this.undoStack;
+    const to = redo ? this.undoStack : this.redoStack;
+    const snap = from.pop();
+    if (snap === undefined) return false;
+    to.push(this.committed);
+    this.committed = snap;
+    const w = JSON.parse(snap) as Pick<Workspace, 'worksheets' | 'annotations' | 'plugins' | 'activeId'>;
+    this.restoring = true;
+    try {
+      this.ws.worksheets = w.worksheets;
+      this.ws.annotations = w.annotations;
+      this.ws.plugins = w.plugins;
+      this.ws.activeId = w.worksheets.some((x) => x.id === w.activeId) ? w.activeId : w.worksheets[0].id;
+      if (this.ws.selectedWidgetId && !w.worksheets.some((x) => x.widgets.some((y) => y.id === this.ws.selectedWidgetId))) this.ws.selectedWidgetId = null;
+      this.emit('worksheets', undefined);
+      this.emit('annotations', undefined);
+      this.emit('plugins', undefined);
+      this.emit('active', this.ws.activeId);
+    } finally {
+      this.restoring = false;
+    }
+    this.quietUntil = Date.now() + 800;
+    return true;
+  }
+
+  canUndo(redo = false) {
+    return (redo ? this.redoStack : this.undoStack).length > 0 || (!redo && this.snapshot() !== this.committed);
   }
 
   // ---------- persistence ----------
@@ -151,10 +224,14 @@ class Store {
     if (!this.ws.worksheets.some((s) => s.id === this.ws.activeId)) this.ws.activeId = this.ws.worksheets[0].id;
     this.history.clear();
     for (const src of sources) this.upsertMeta(src);
+    this.restoring = true;
     this.emit('sources', undefined);
     this.emit('settings', undefined);
     this.emit('worksheets', undefined);
     this.emit('active', this.ws.activeId);
+    this.restoring = false;
+    // another workspace: its own history starts here
+    this.resetUndo();
   }
 
   // ---------- sources ----------
