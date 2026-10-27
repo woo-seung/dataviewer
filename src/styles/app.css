@@ -497,7 +497,7 @@ label.checkbox-container::after {
 }
 @container (max-width: 1000px) {
   .view-header .toolbar-button > span,
-  .view-header .range-duration {
+  .view-header .range-whole {
     display: none;
   }
 }
@@ -580,12 +580,40 @@ label.checkbox-container::after {
 .range-sep {
   color: var(--text-faint);
 }
-.range-duration {
+.range-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.dur-field {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+.dur-input {
+  font-family: var(--font-monospace);
+  font-size: 12px !important;
+  width: 9ch;
+  height: 26px !important;
+  text-align: center;
+  border-radius: 13px !important;
+  background: var(--background-secondary) !important;
+  color: var(--text-muted) !important;
+}
+.dur-input:focus {
+  color: var(--text-normal) !important;
+}
+.dur-input.is-invalid {
+  border-color: var(--text-error) !important;
+}
+.dur-input:disabled {
+  opacity: 0.6;
+}
+.range-whole {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: var(--background-secondary);
   margin-left: 4px;
   white-space: nowrap;
 }

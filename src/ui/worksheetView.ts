@@ -21,8 +21,7 @@ import { store } from '../store';
 import type { TimeRange } from '../types';
 import { MIN_TILE, type Tile } from '../layout';
 import { dropTarget, isSeries } from './dnd';
-import { formatDuration } from '../data/time';
-import { timeField, type TimeField } from './timeField';
+import { RangeEditor } from './rangeEditor';
 import { h, icon, iconButton } from '../util';
 import { ChartWidget } from './chartWidget';
 import { showMenu } from './overlays';
@@ -52,31 +51,19 @@ export class WorksheetView {
   private rootRows: { split: Tile & { kind: 'split' }; kids: HTMLElement[] } | null = null;
   private widgets = new Map<string, ChartWidget>();
   private unsub: (() => void)[] = [];
-  private fromField: TimeField;
-  private toField: TimeField;
+  private rangeEditor: RangeEditor;
   private backBtn: HTMLButtonElement;
   private fwdBtn: HTMLButtonElement;
   private crossBtn: HTMLButtonElement;
   private annoBtn: HTMLButtonElement;
   private annoBar: HTMLElement;
-  private durLabel: HTMLElement;
   private emptyState: HTMLElement;
 
   constructor(readonly wsId: string) {
     this.backBtn = iconButton(ArrowLeft, '뒤로 (Alt+←)', () => store.back(this.wsId));
     this.fwdBtn = iconButton(ArrowRight, '앞으로 (Alt+→)', () => store.forward(this.wsId));
-    // typing a start after the end (or an end before the start) moves the window instead
-    this.fromField = timeField('시작 시각', (a) => {
-      const r = store.sheetRange(this.wsId);
-      if (!r) return;
-      store.setRange(this.wsId, a < r.end ? { start: a, end: r.end } : { start: a, end: a + (r.end - r.start) });
-    });
-    this.toField = timeField('종료 시각', (b) => {
-      const r = store.sheetRange(this.wsId);
-      if (!r) return;
-      store.setRange(this.wsId, b > r.start ? { start: r.start, end: b } : { start: b - (r.end - r.start), end: b });
-    });
-    this.durLabel = h('span', { class: 'range-duration' });
+    // start → end · duration, typed (Tab between, Enter applies) or from the calendar
+    this.rangeEditor = new RangeEditor((r) => store.setRange(this.wsId, r), h('span', { class: 'range-sep' }, '→'));
     this.crossBtn = iconButton(Crosshair, '크로스헤어 동기화', () => {
       const ws = store.sheet(this.wsId)!;
       store.updateWorksheet(this.wsId, { crosshair: !ws.crosshair });
@@ -121,14 +108,11 @@ export class WorksheetView {
         { class: 'view-header-range' },
         presetBtn,
         optional(iconButton(ChevronLeft, '왼쪽으로 이동 (←)', () => this.pan(-0.25))),
-        this.fromField.el,
-        h('span', { class: 'range-sep' }, '→'),
-        this.toField.el,
+        this.rangeEditor.el,
         optional(iconButton(ChevronRight, '오른쪽으로 이동 (→)', () => this.pan(0.25))),
         optional(iconButton(ZoomIn, '확대 (+)', () => this.zoom(0.5))),
         optional(iconButton(ZoomOut, '축소 (-)', () => this.zoom(2))),
         optional(iconButton(Maximize, '전체 보기 (A)', () => this.applyPreset(null))),
-        this.durLabel,
       ),
       h('div', { class: 'widget-header-spacer' }),
       h(
@@ -364,15 +348,7 @@ export class WorksheetView {
     const r = store.sheetRange(this.wsId);
     this.backBtn.disabled = !store.canBack(this.wsId);
     this.fwdBtn.disabled = !store.canForward(this.wsId);
-    if (r) {
-      this.fromField.set(r.start);
-      this.toField.set(r.end);
-      this.durLabel.textContent = `${formatDuration(r.end - r.start)}${ws.range ? '' : ' · 전체'}`;
-    } else {
-      this.fromField.set(null);
-      this.toField.set(null);
-      this.durLabel.textContent = '데이터 없음';
-    }
+    this.rangeEditor.set(r, !ws.range);
     this.crossBtn.classList.toggle('is-active', ws.crosshair);
   }
 

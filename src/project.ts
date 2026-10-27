@@ -30,9 +30,12 @@ export interface Recent {
   name: string;
 }
 
+/** Recent workspaces, newest first, one entry per file name (older lists could repeat one). */
 function readRecent(): Recent[] {
   try {
-    return JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]') as Recent[];
+    const list = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]') as Recent[];
+    const seen = new Set<string>();
+    return list.filter((r) => !seen.has(r.name) && (seen.add(r.name), true));
   } catch {
     return [];
   }
@@ -150,28 +153,44 @@ class Project {
     return JSON.parse(JSON.stringify(store.ws)) as Workspace;
   }
 
-  private async remember(handle: FileSystemFileHandle | null) {
+  private remembering: Promise<void> = Promise.resolve();
+
+  /** Put a workspace at the top of the recent list (one entry per file). */
+  private remember(handle: FileSystemFileHandle | null): Promise<void> {
+    // one at a time: two overlapping calls would both add the same file
+    this.remembering = this.remembering.then(() => this.rememberNow(handle)).catch(() => undefined);
+    return this.remembering;
+  }
+
+  private async rememberNow(handle: FileSystemFileHandle | null) {
     if (!handle) {
       this.recentId = null;
       localStorage.removeItem(LAST_KEY);
       return;
     }
-    // same file as a recent entry?
-    let id: string | null = null;
+    // every entry for this file (same entry, or same file name) collapses into one
+    const same: string[] = [];
     for (const r of this.recent) {
       const hd = await handles.get(`ws:${r.id}`);
-      if (hd && (await hd.isSameEntry(handle).catch(() => false))) {
-        id = r.id;
-        break;
-      }
+      const match = r.name === handle.name || (hd ? await hd.isSameEntry(handle).catch(() => false) : false);
+      if (match) same.push(r.id);
     }
-    id ??= uid('ws');
+    const id = same[0] ?? uid('ws');
+    for (const old of same.slice(1)) void handles.del(`ws:${old}`);
     await handles.set(`ws:${id}`, handle);
     this.recentId = id;
-    this.recent = [{ id, name: handle.name }, ...this.recent.filter((r) => r.id !== id)].slice(0, 12);
+    this.recent = [{ id, name: handle.name }, ...this.recent.filter((r) => !same.includes(r.id))].slice(0, 12);
+    this.persistRecent();
+    try {
+      localStorage.setItem(LAST_KEY, id);
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  private persistRecent() {
     try {
       localStorage.setItem(RECENT_KEY, JSON.stringify(this.recent));
-      localStorage.setItem(LAST_KEY, id);
     } catch {
       /* storage unavailable */
     }

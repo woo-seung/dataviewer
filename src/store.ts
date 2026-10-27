@@ -473,7 +473,8 @@ class Store {
     const w = defaultWidget(partial);
     const before = this.layoutOf(wsId);
     ws.widgets.push(w);
-    ws.layout = place ? insertAt(before, place.target, w.id, place.side) : this.placeNew(wsId, before, w.id);
+    // every new widget leaves the sheet with equal heights (PowerPoint's "distribute")
+    ws.layout = distribute(place ? insertAt(before, place.target, w.id, place.side) : this.placeNew(wsId, before, w.id), 'v');
     this.appendSeries(w, items);
     if (!w.title) w.title = this.autoTitle(w);
     this.emit('widgets', wsId);
