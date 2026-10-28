@@ -228,6 +228,7 @@ export class PropertiesPanel {
     const y = w.yAxis;
     this.section(
       'Y축',
+      row('0–1 정규화', toggle(!!w.normalize, (v) => upd({ normalize: v }), '0–1 정규화'), '시리즈마다 보이는 구간의 최소 → 0, 최대 → 1. 스케일이 다른 변수를 함께 비교 (툴팁·범례는 원래 값)'),
       row('자동 범위', toggle(y.auto, (v) => updY({ auto: v }), '자동 범위')),
       y.auto ? null : row('최소', numInput(y.min, (v) => updY({ min: v }))),
       y.auto ? null : row('최대', numInput(y.max, (v) => updY({ max: v }))),

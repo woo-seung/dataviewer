@@ -13,6 +13,7 @@ import {
   FolderOpen,
   Layers,
   Link,
+  FoldVertical,
   Maximize2,
   Minimize2,
   Pencil,
@@ -184,6 +185,9 @@ export class ChartWidget {
   private yLabel: HTMLElement;
   private pointTip: HTMLElement;
   private cursorOut: (() => void) | null = null;
+  /** 0–1 view: each series' min / max in the drawn window (series id → range) */
+  private norm = new Map<string, { lo: number; hi: number }>();
+  private normBtn: HTMLButtonElement;
   private pointDot: HTMLElement;
   private mouseY: number | null = null;
   private lastCursor: number | null = null;
@@ -215,6 +219,7 @@ export class ChartWidget {
     });
     this.typeBtn = iconButton(ChartLine, '차트 유형', () => this.typeMenu(), 'clickable-icon widget-type');
     this.linkBtn = iconButton(Link, '타임라인 연동', () => this.toggleLink());
+    this.normBtn = iconButton(FoldVertical, '0–1 정규화 (스케일이 다른 시리즈를 함께 보기)', () => store.updateWidget(this.wsId, this.id, { normalize: !this.state.normalize }), 'clickable-icon ts-only');
     this.maxBtn = iconButton(Maximize2, '최대화', () => this.toggleMaximize());
     this.badge = h('span', { class: 'widget-badge' });
     this.noteBadge = h('button', { type: 'button', class: 'widget-note-badge', hidden: true });
@@ -235,6 +240,7 @@ export class ChartWidget {
         { class: 'widget-actions' },
         iconButton(ZoomOut, '줌 초기화 (더블클릭)', () => this.resetZoom()),
         this.linkBtn,
+        this.normBtn,
         iconButton(Table2, '범례 테이블', () => store.updateWidget(this.wsId, this.id, { showLegend: !this.state.showLegend }), 'clickable-icon ts-only'),
         iconButton(Camera, '스냅샷 PNG', () => void this.snapshot()),
         this.maxBtn,
@@ -329,7 +335,9 @@ export class ChartWidget {
     this.linkBtn.replaceChildren(icon(st.linked ? Link : Unlink, 16));
     this.linkBtn.classList.toggle('is-active', st.linked);
     this.linkBtn.title = st.linked ? '타임라인 연동됨 (클릭하여 해제)' : '독립 타임라인 (클릭하여 연동)';
-    this.badge.textContent = st.linked ? '' : '독립';
+    this.badge.textContent = [st.linked ? '' : '독립', st.normalize && !st.plugin ? '0–1' : ''].filter(Boolean).join(' · ');
+    this.normBtn.classList.toggle('is-active', !!st.normalize);
+    this.normBtn.title = st.normalize ? '0–1 정규화 켜짐 — 원래 값으로 보기' : '0–1 정규화 (스케일이 다른 시리즈를 함께 보기)';
     this.content.classList.toggle('is-plugin', !!st.plugin);
     if (st.plugin) return this.renderPlugin(st);
     if (this.frame) {
@@ -380,6 +388,25 @@ export class ChartWidget {
       for (let k = 0; k < y.length; k++) y[k] = w.y[k] * s.scale + s.offset;
       return { x: w.x, y, raw: w.raw };
     });
+    // 0–1: each series by its own min / max in this window (M4 keeps the extremes)
+    this.norm.clear();
+    if (st.normalize) {
+      wins.forEach((w, i) => {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const v of w.y) {
+          if (!Number.isFinite(v)) continue;
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        if (lo > hi) return;
+        this.norm.set(series[i].id, { lo, hi });
+        const d = hi - lo;
+        const y = new Float64Array(w.y.length);
+        for (let k = 0; k < y.length; k++) y[k] = d > 0 ? (w.y[k] - lo) / d : 0.5;
+        wins[i] = { x: w.x, y, raw: w.raw };
+      });
+    }
     const { x, ys } = align(wins);
     let data: Cell[][] = ys;
     if (stacked) {
@@ -399,6 +426,7 @@ export class ChartWidget {
       st.lineWidth,
       st.markers,
       store.ws.settings.zoomY,
+      !!st.normalize,
     ]);
     const aligned = [x as unknown as number[], ...(data as number[][])] as uPlot.AlignedData;
     if (!this.u || key !== this.structKey) {
@@ -425,7 +453,8 @@ export class ChartWidget {
     const y = st.yAxis;
     const stacked = st.type === 'stacked';
     const stepped = uPlot.paths.stepped!({ align: 1 });
-    const fmtY = (v: number) => formatValue(v, y.siPrefix, y.unit);
+    const norm = !!st.normalize;
+    const fmtY = norm ? (v: number) => String(Number(v.toFixed(2))) : (v: number) => formatValue(v, y.siPrefix, y.unit);
 
     const sOpts: uPlot.Series[] = series.map((s, i) => {
       const color = resolveColor(s.color, theme);
@@ -465,6 +494,7 @@ export class ChartWidget {
     }
 
     const yRange: uPlot.Scale.Range = (_u, min, max) => {
+      if (norm) return [-0.04, 1.04];
       if (!y.auto && y.min !== null && y.max !== null && y.max > y.min) return [y.min, y.max];
       if (min === null || max === null || !Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];
       if (y.log) return uPlot.rangeLog(Math.max(min, 1e-12), Math.max(max, 1e-12), 10, true);
@@ -493,7 +523,7 @@ export class ChartWidget {
       focus: { alpha: 0.25 },
       scales: {
         x: { time: true, auto: false, range: () => [this.curRange.start, this.curRange.end] },
-        y: { distr: y.log ? 3 : 1, auto: true, range: yRange },
+        y: { distr: y.log && !norm ? 3 : 1, auto: true, range: yRange },
       },
       axes: [
         { stroke: text, font, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1, size: 4 }, space: 80, values: TIME_TICKS },
@@ -737,7 +767,7 @@ export class ChartWidget {
         let best = Infinity;
         values.forEach((v, i) => {
           if (v.value === null || v.value === undefined || !u || py === null) return;
-          const d = Math.abs(u.valToPos(v.value, 'y') - py);
+          const d = Math.abs(u.valToPos(this.toPlot(series[i].id, v.value), 'y') - py);
           if (d < best) {
             best = d;
             y = v.value;
@@ -883,7 +913,7 @@ export class ChartWidget {
         const x = u.valToPos(a.t, 'x');
         if (x < -6 || x > W + 6) continue;
         const yv = a.y;
-        const py = yv === null || yv === undefined ? 8 : Math.max(0, Math.min(H, u.valToPos(yv, 'y')));
+        const py = yv === null || yv === undefined ? 8 : Math.max(0, Math.min(H, u.valToPos(this.toPlot(a.seriesId, yv), 'y')));
         const line = h('div', { class: `anno-mark anno-line ${focused ? 'is-focused' : ''}`, style: `--c:${a.color};left:${x}px` });
         const pin = h('div', { class: `anno-mark anno-pin ${focused ? 'is-focused' : ''}`, style: `--c:${a.color};left:${x}px;top:${py}px`, title: tip });
         pin.addEventListener('mousedown', (ev) => ev.stopPropagation());
@@ -1097,12 +1127,29 @@ export class ChartWidget {
     if (own && this.mouseY !== null) {
       const top = oy + this.mouseY;
       Object.assign(this.hline.style, { display: 'block', top: `${top}px`, left: `${ox}px`, width: `${W}px` });
-      this.yLabel.textContent = formatValue(u.posToVal(this.mouseY, 'y'), this.state.yAxis.siPrefix, this.state.yAxis.unit);
+      const yv = u.posToVal(this.mouseY, 'y');
+      this.yLabel.textContent = this.state.normalize ? yv.toFixed(3) : formatValue(yv, this.state.yAxis.siPrefix, this.state.yAxis.unit);
       Object.assign(this.yLabel.style, { display: 'block', top: `${top - 9}px`, left: `${ox + 2}px` });
     } else {
       this.hline.style.display = 'none';
       this.yLabel.style.display = 'none';
     }
+  }
+
+  /** A data value in plot units (0–1 when normalized). */
+  private toPlot(seriesId: string | undefined, v: number) {
+    const n = seriesId ? this.norm.get(seriesId) : undefined;
+    if (!n) return v;
+    return n.hi > n.lo ? (v - n.lo) / (n.hi - n.lo) : 0.5;
+  }
+
+  /** Tooltip value: the measured one (and the 0–1 position when normalized). */
+  private tipValue(i: number, v: number) {
+    const y = this.state.yAxis;
+    const s = this.loadedSeries(this.state)[i - 1];
+    const n = s ? this.norm.get(s.id) : undefined;
+    if (!n) return formatValue(v, y.siPrefix, y.unit);
+    return `${formatValue(n.lo + v * (n.hi - n.lo), y.siPrefix, y.unit)}  (${v.toFixed(2)})`;
   }
 
   private hidePointTip() {
@@ -1140,10 +1187,9 @@ export class ChartWidget {
     if (!hit) return this.hidePointTip();
     const se = u.series[hit.i];
     const color = typeof se.stroke === 'function' ? cssVar('--text-normal') : String(se.stroke ?? '');
-    const y = this.state.yAxis;
     this.pointTip.replaceChildren(
       h('div', { class: 'point-tip-name' }, h('span', { class: 'point-tip-swatch', style: `background:${color}` }), String(se.label ?? '')),
-      h('div', { class: 'point-tip-value' }, formatValue(u.data[hit.i][hit.j] as number, y.siPrefix, y.unit)),
+      h('div', { class: 'point-tip-value' }, this.tipValue(hit.i, u.data[hit.i][hit.j] as number)),
       h('div', { class: 'point-tip-time' }, formatTime(xs[hit.j])),
     );
     Object.assign(this.pointDot.style, { display: 'block', left: `${ox + hit.x}px`, top: `${oy + hit.y}px`, borderColor: color });
@@ -1315,6 +1361,7 @@ export class ChartWidget {
       { separator: true, title: '' },
       ...CHART_TYPES.map((c) => ({ title: c.label, icon: c.icon, checked: st.type === c.type, onClick: () => store.setChartType(this.wsId, this.id, c.type) })),
       { separator: true, title: '' },
+      { title: '0–1 정규화 (스케일 맞춰 보기)', icon: FoldVertical, checked: !!st.normalize, onClick: () => store.updateWidget(this.wsId, this.id, { normalize: !st.normalize }) },
       { title: st.showLegend ? '범례 숨기기' : '범례 보이기', icon: Table2, onClick: () => store.updateWidget(this.wsId, this.id, { showLegend: !st.showLegend }) },
       { title: '모든 시리즈 보이기', icon: Eye, onClick: () => st.series.forEach((s) => store.updateSeries(this.wsId, this.id, s.id, { visible: true })) },
       { title: '스냅샷 PNG', icon: Camera, onClick: () => void this.snapshot() },

@@ -96,6 +96,8 @@ export interface WidgetState {
   markers: boolean;
   /** Max points per series rendered for the visible window (LTTB). 0 = no limit. */
   maxPoints: number;
+  /** Each series scaled to 0–1 (its min / max in the visible range), to compare different scales. */
+  normalize?: boolean;
 }
 
 export interface Worksheet {
