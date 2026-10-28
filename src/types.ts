@@ -203,6 +203,8 @@ export interface Workspace {
 export interface SeriesDrag {
   items: { sourceId: string; column: string }[];
   fromWidget?: { worksheetId: string; widgetId: string; seriesIds: string[] };
+  /** a column block dragged out of a plugin parameter slot (moved, not copied, between slots) */
+  fromParam?: { widgetId: string; key: string };
 }
 
 export const DRAG_MIME = 'application/x-chronos-series';

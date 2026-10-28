@@ -1,8 +1,9 @@
 /** Form for a plugin widget's parameters, generated from the plugin's `params` definition. */
-import { X } from 'lucide';
+import { GripVertical, X } from 'lucide';
 import { store } from '../store';
 import type { ColumnRef, ParamSpec, ParamValue, PluginManifest } from '../plugins/types';
-import { h, iconButton } from '../util';
+import { h, icon, iconButton } from '../util';
+import { draggable, dropTarget, isSeries, seriesPayload, type DragPayload } from './dnd';
 
 /** Every loaded column as "source › column", for the column pickers. */
 function columnOptions(): { key: string; ref: ColumnRef }[] {
@@ -34,6 +35,70 @@ function columnInput(value: ColumnRef | null, onPick: (r: ColumnRef | null) => v
   return h('span', { class: 'param-column-wrap' }, input, list);
 }
 
+const same = (a: ColumnRef, b: ColumnRef) => a.source === b.source && a.column === b.column;
+const refsOf = (p: DragPayload): ColumnRef[] => (isSeries(p) ? p.data.items.map((i) => ({ source: i.sourceId, column: i.column, label: i.column })) : []);
+
+/**
+ * A column parameter as a slot of blocks (Lego-like): drag columns in from the
+ * explorer (or a block from another slot, which moves it), × takes one out,
+ * the search field adds by name. `column` holds one block (a drop replaces
+ * it), `columns` up to `max`.
+ */
+function columnSlot(
+  key: string,
+  p: ParamSpec & { type: 'column' | 'columns' },
+  v: ParamValue,
+  values: Record<string, ParamValue>,
+  set: (patch: Record<string, ParamValue>) => void,
+  widgetId: string,
+): HTMLElement {
+  const multi = p.type === 'columns';
+  const list: ColumnRef[] = multi ? [...((v as ColumnRef[]) ?? [])] : v ? [v as ColumnRef] : [];
+  const max = multi ? (p as { max?: number }).max : 1;
+  const store1 = (next: ColumnRef[]): ParamValue => (multi ? next : (next[0] ?? null));
+  const put = (refs: ColumnRef[], from?: { widgetId: string; key: string }) => {
+    let next = multi ? [...list] : [];
+    for (const r of refs) if (!next.some((c) => same(c, r)) && (max === undefined || next.length < max)) next.push(r);
+    if (!multi) next = refs.slice(0, 1);
+    const patch: Record<string, ParamValue> = { [key]: store1(next) };
+    // a block moved out of another slot of this widget leaves it
+    if (from && from.widgetId === widgetId && from.key !== key) {
+      const old = values[from.key];
+      // onto an occupied one-column slot: the two blocks swap places
+      const back = !multi && list[0] && !refs.some((r) => same(r, list[0])) ? list[0] : null;
+      if (Array.isArray(old)) {
+        const rest = (old as ColumnRef[]).filter((c) => !refs.some((r) => same(c, r)));
+        patch[from.key] = back && !rest.some((c) => same(c, back)) ? [...rest, back] : rest;
+      } else patch[from.key] = back;
+    }
+    set(patch);
+  };
+  const blocks = list.map((c, i) => {
+    const b = h(
+      'span',
+      { class: 'param-block', title: `${c.column}\n끌어서 다른 칸으로 옮기기` },
+      icon(GripVertical, 12, 'param-block-grip'),
+      h('span', { class: 'param-block-label' }, c.label),
+      iconButton(X, '빼기', () => set({ [key]: store1(list.filter((_, j) => j !== i)) }), 'clickable-icon', 12),
+    );
+    draggable(
+      b,
+      () => seriesPayload({ items: [{ sourceId: c.source, column: c.column }], fromParam: { widgetId, key } }),
+      () => `${c.label} — 다른 칸으로 옮기기`,
+    );
+    return b;
+  });
+  const full = max !== undefined && list.length >= max;
+  const hint = h('span', { class: 'param-slot-hint' }, list.length ? (multi ? (full ? `최대 ${max}개` : '＋ 끌어 놓기') : '끌어 놓으면 교체') : multi ? '탐색기에서 열을 끌어 놓기 (여러 개)' : '탐색기에서 열을 끌어 놓기');
+  const slot = h('div', { class: `param-slot ${list.length ? '' : 'is-empty'}` }, ...blocks, hint);
+  dropTarget(slot, {
+    accepts: (d) => isSeries(d) && !(d.data.fromParam && d.data.fromParam.widgetId === widgetId && d.data.fromParam.key === key),
+    drop: (d) => put(refsOf(d), isSeries(d) ? d.data.fromParam : undefined),
+  });
+  const search = full && multi ? null : columnInput(null, (r) => r && put([r]), multi ? '열 추가…' : list.length ? '다른 열로 바꾸기…' : '열 검색…');
+  return h('div', { class: 'param-columns' }, slot, search);
+}
+
 function defaultOf(p: ParamSpec): ParamValue {
   switch (p.type) {
     case 'columns':
@@ -56,33 +121,16 @@ export function resolveParams(m: PluginManifest, params: Record<string, ParamVal
   return out;
 }
 
-export function paramControls(m: PluginManifest, params: Record<string, ParamValue>, set: (patch: Record<string, ParamValue>) => void): HTMLElement[] {
+export function paramControls(m: PluginManifest, params: Record<string, ParamValue>, set: (patch: Record<string, ParamValue>) => void, widgetId = ''): HTMLElement[] {
   const values = resolveParams(m, params);
   return Object.entries(m.params).map(([k, p]) => {
     let control: HTMLElement;
     const v = values[k];
     switch (p.type) {
       case 'column':
-        control = columnInput(v as ColumnRef | null, (r) => set({ [k]: r }));
+      case 'columns':
+        control = columnSlot(k, p, v, values, set, widgetId);
         break;
-      case 'columns': {
-        const list = (v as ColumnRef[]) ?? [];
-        const chips = h(
-          'div',
-          { class: 'param-chips' },
-          ...list.map((c, i) =>
-            h('span', { class: 'param-chip', title: c.column }, c.label, iconButton(X, '빼기', () => set({ [k]: list.filter((_, j) => j !== i) }), 'clickable-icon', 12)),
-          ),
-        );
-        const full = p.max !== undefined && list.length >= p.max;
-        control = h(
-          'div',
-          { class: 'param-columns' },
-          chips,
-          full ? h('span', { class: 'muted' }, `최대 ${p.max}개`) : columnInput(null, (r) => r && !list.some((c) => c.source === r.source && c.column === r.column) && set({ [k]: [...list, r] }), '열 추가…'),
-        );
-        break;
-      }
       case 'number': {
         const i = h('input', { type: 'number', value: String(v ?? ''), min: p.min, max: p.max, step: p.step ?? 'any', class: 'num-input' }) as HTMLInputElement;
         i.addEventListener('change', () => i.value !== '' && Number.isFinite(Number(i.value)) && set({ [k]: Number(i.value) }));

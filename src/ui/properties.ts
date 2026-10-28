@@ -175,8 +175,8 @@ export class PropertiesPanel {
         ...paramControls(p, spec.params, (patch) => {
           this.mut(() => store.setPluginParams(wsId, w.id, patch));
           this.render();
-        }),
-        h('div', { class: 'muted plugin-prop-hint' }, '탐색기에서 열을 이 차트 가운데로 끌어 놓아도 열 파라미터가 채워집니다.'),
+        }, w.id),
+        h('div', { class: 'muted plugin-prop-hint' }, '탐색기의 열을 위 칸에 블록처럼 끌어 놓으세요 (블록끼리 칸을 옮길 수도 있음). 차트 가운데로 끌어 놓아도 빈 칸부터 채워집니다.'),
       );
     });
   }
