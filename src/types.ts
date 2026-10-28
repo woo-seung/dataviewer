@@ -1,0 +1,214 @@
+import type { Tile } from './layout';
+import type { ParamValue, PluginRecord, PluginWidget } from './plugins/types';
+import type { TimeFormat } from './data/time';
+
+/** How a CSV was imported, by column name, so it can be re-imported without asking. */
+export interface ImportSettings {
+  delimiter: string;
+  hasHeader: boolean;
+  timeColumn: string;
+  timeFormat: TimeFormat;
+  columns: string[];
+  compact: boolean;
+}
+
+/** A loaded data source as the engine describes it (the data itself stays in the engine). */
+export interface SourceInfo {
+  id: string;
+  name: string;
+  /** Absolute path of the original CSV. */
+  path: string;
+  size: number;
+  lastModified: number;
+  importedAt: number;
+  timeColumn: string;
+  import: ImportSettings;
+  rows: number;
+  /** Epoch ms of the first / last sample. */
+  start: number;
+  end: number;
+  compact: boolean;
+  /** Memory used by the parsed data. */
+  bytes: number;
+  columns: ColumnInfo[];
+  /** Loaded from the workspace file because the CSV was not found. */
+  missingOriginal: boolean;
+}
+
+export interface ColumnInfo {
+  name: string;
+  /** Over the whole column (null when empty). */
+  min: number | null;
+  max: number | null;
+  mean: number | null;
+}
+
+export type ChartType = 'line' | 'area' | 'stacked' | 'scatter' | 'step';
+
+export interface SeriesRef {
+  id: string;
+  sourceId: string;
+  column: string;
+  label: string;
+  color: string;
+  visible: boolean;
+  /** Linear transform applied before display: y' = y * scale + offset. */
+  scale: number;
+  offset: number;
+}
+
+export interface TimeRange {
+  start: number;
+  end: number;
+}
+
+export interface YAxisOptions {
+  auto: boolean;
+  min: number | null;
+  max: number | null;
+  log: boolean;
+  unit: string;
+  /** Format tick labels with SI prefixes (k, M, G…). */
+  siPrefix: boolean;
+  /** Include zero in the automatic range. */
+  includeZero: boolean;
+}
+
+export interface WidgetState {
+  id: string;
+  title: string;
+  type: ChartType;
+  series: SeriesRef[];
+  /** A plugin chart instead of a time-series chart. */
+  plugin?: PluginWidget;
+  /** Former free-grid placement; only read to tile older workspaces. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Follows the worksheet timeline when true. */
+  linked: boolean;
+  /** Own range when not linked. */
+  range: TimeRange | null;
+  yAxis: YAxisOptions;
+  showLegend: boolean;
+  lineWidth: number;
+  markers: boolean;
+  /** Max points per series rendered for the visible window (LTTB). 0 = no limit. */
+  maxPoints: number;
+  /** Each series scaled to 0–1 (its min / max in the visible range), to compare different scales. */
+  normalize?: boolean;
+}
+
+export interface Worksheet {
+  id: string;
+  name: string;
+  widgets: WidgetState[];
+  /** Tiled arrangement of the widgets (absent in older workspaces: built from x/y/w/h). */
+  layout?: Tile | null;
+  /** Worksheet height in px when taller than the screen (null = fit the screen). */
+  height?: number | null;
+  /** Shared timeline; null = fit all data. */
+  range: TimeRange | null;
+  crosshair: boolean;
+}
+
+export interface Settings {
+  theme: 'dark' | 'light';
+  leftOpen: boolean;
+  rightOpen: boolean;
+  leftWidth: number;
+  rightWidth: number;
+  defaultMaxPoints: number;
+  dragMode: 'zoom' | 'pan';
+  /** Allow box-zoom / wheel-zoom on the value axis too. */
+  zoomY: boolean;
+  /** Which right-sidebar tab is shown. */
+  rightTab?: 'props' | 'annotations';
+}
+
+/** One series' data captured with an annotation (value at a point, or stats over a range). */
+export interface AnnotationValue {
+  label: string;
+  sourceId: string;
+  column: string;
+  value?: number | null;
+  min?: number | null;
+  max?: number | null;
+  mean?: number | null;
+  count?: number;
+}
+
+/**
+ * A note pinned to a chart, at one moment (`point`), over a span (`range`)
+ * or on a whole plugin chart (`chart`), with the data there and the view it
+ * was made in, so opening it brings that screen back.
+ */
+export interface Annotation {
+  id: string;
+  worksheetId: string;
+  widgetId: string;
+  kind: 'point' | 'range' | 'chart';
+  /** Point time, or range start (epoch ms; for `chart`, the visible range). */
+  t: number;
+  /** Range end. */
+  t2?: number;
+  /** Value the point pin sits on, and the series it belongs to. */
+  y?: number | null;
+  seriesId?: string;
+  note: string;
+  color: string;
+  createdAt: number;
+  updatedAt?: number;
+  values: AnnotationValue[];
+  /** The chart's view when the note was made. */
+  view: {
+    range: TimeRange;
+    linked: boolean;
+    yAxis: YAxisOptions;
+    visible: string[];
+    /** Plugin charts: the plugin and its parameters at the time. */
+    plugin?: { id: string; params: Record<string, ParamValue> };
+    /** Plugin charts: a small picture of the chart then (data URL). */
+    snapshot?: string;
+  };
+  /** Names at creation time (shown if the widget is deleted later). */
+  widgetTitle: string;
+  sheetName: string;
+}
+
+/**
+ * What the layout remembers about each source, so charts can be restored by
+ * re-importing the original CSV when no workspace file holds its data.
+ */
+export interface SourceMeta {
+  id: string;
+  name: string;
+  path: string;
+  columns: string[];
+  import: ImportSettings;
+}
+
+export interface Workspace {
+  version: 1;
+  worksheets: Worksheet[];
+  sourceMeta?: SourceMeta[];
+  annotations?: Annotation[];
+  /** Copies of the user plugins this workspace's widgets use. */
+  plugins?: PluginRecord[];
+  activeId: string;
+  selectedWidgetId: string | null;
+  settings: Settings;
+}
+
+/** Drag payload for series dragged from the tree or another widget. */
+export interface SeriesDrag {
+  items: { sourceId: string; column: string }[];
+  fromWidget?: { worksheetId: string; widgetId: string; seriesIds: string[] };
+  /** a column block dragged out of a plugin parameter slot (moved, not copied, between slots) */
+  fromParam?: { widgetId: string; key: string };
+}
+
+export const DRAG_MIME = 'application/x-chronos-series';
+/** Extra marker type set when the drag comes from a chart legend (readable during dragover). */
+export const DRAG_MOVE_MIME = 'application/x-chronos-move';

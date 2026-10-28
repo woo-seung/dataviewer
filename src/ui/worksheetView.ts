@@ -1,0 +1,397 @@
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Crosshair,
+  FolderOpen,
+  LayoutDashboard,
+  ChartLine,
+  Puzzle,
+  MessageSquarePlus,
+  Maximize,
+  Plus,
+  Sparkles,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide';
+import { store } from '../store';
+import type { TimeRange } from '../types';
+import { MIN_TILE, type Tile } from '../layout';
+import { dropTarget, isSeries } from './dnd';
+import { RangeEditor } from './rangeEditor';
+import { h, icon, iconButton } from '../util';
+import { ChartWidget } from './chartWidget';
+import { showMenu } from './overlays';
+import { actions } from '../actions';
+import { arrangeMenu } from './arrange';
+import { plugins } from '../plugins/registry';
+import { addPluginWidget, openPluginManager } from './pluginManager';
+
+/** Toolbar buttons that also have keys; hidden when the worksheet is narrow. */
+const optional = <T extends HTMLElement>(el: T) => (el.classList.add('hdr-optional'), el);
+
+const PRESETS: { label: string; ms: number | null; hint?: string }[] = [
+  { label: '전체 데이터', ms: null, hint: 'A' },
+  { label: '마지막 15분', ms: 15 * 60e3 },
+  { label: '마지막 1시간', ms: 3600e3 },
+  { label: '마지막 6시간', ms: 6 * 3600e3 },
+  { label: '마지막 12시간', ms: 12 * 3600e3 },
+  { label: '마지막 24시간', ms: 24 * 3600e3 },
+  { label: '마지막 7일', ms: 7 * 86400e3 },
+  { label: '마지막 30일', ms: 30 * 86400e3 },
+];
+
+export class WorksheetView {
+  readonly el: HTMLElement;
+  private tilesEl: HTMLElement;
+  private growHandle: HTMLElement;
+  private rootRows: { split: Tile & { kind: 'split' }; kids: HTMLElement[] } | null = null;
+  private widgets = new Map<string, ChartWidget>();
+  private unsub: (() => void)[] = [];
+  private rangeEditor: RangeEditor;
+  private backBtn: HTMLButtonElement;
+  private fwdBtn: HTMLButtonElement;
+  private crossBtn: HTMLButtonElement;
+  private annoBtn: HTMLButtonElement;
+  private annoBar: HTMLElement;
+  private emptyState: HTMLElement;
+
+  constructor(readonly wsId: string) {
+    this.backBtn = iconButton(ArrowLeft, '뒤로 (Alt+←)', () => store.back(this.wsId));
+    this.fwdBtn = iconButton(ArrowRight, '앞으로 (Alt+→)', () => store.forward(this.wsId));
+    // start → end · duration, typed (Tab between, Enter applies) or from the calendar
+    this.rangeEditor = new RangeEditor((r) => store.setRange(this.wsId, r), h('span', { class: 'range-sep' }, '→'));
+    this.crossBtn = iconButton(Crosshair, '크로스헤어 동기화', () => {
+      const ws = store.sheet(this.wsId)!;
+      store.updateWorksheet(this.wsId, { crosshair: !ws.crosshair });
+    });
+
+    const presetBtn = h('button', { class: 'toolbar-button', type: 'button', title: '시간 범위 프리셋' }, icon(Clock, 15), h('span', {}, '범위'), icon(ChevronDown, 14));
+    presetBtn.addEventListener('click', () =>
+      showMenu(
+        PRESETS.map((p) => ({ title: p.label, hint: p.hint, onClick: () => this.applyPreset(p.ms) })),
+        presetBtn,
+      ),
+    );
+
+    this.annoBtn = iconButton(MessageSquarePlus, '주석 달기 (N) — 그래프를 클릭하면 포인트, 드래그하면 구간', () => store.setAnnotating(!store.annotating));
+    // "+": a time-series chart or any installed chart plugin
+    const addBtn = iconButton(Plus, '위젯 추가 (시계열 차트 / 플러그인 차트)', () => {
+      void plugins.list().then((list) =>
+        showMenu(
+          [
+            { title: '시계열 차트', icon: ChartLine, onClick: () => store.addWidget(this.wsId) },
+            { separator: true, title: '' },
+            ...list.map((p) => ({ title: p.name, icon: Puzzle, onClick: () => addPluginWidget(p) })),
+            { separator: true, title: '' },
+            { title: '플러그인 관리 · 새 플러그인 만들기…', icon: Puzzle, onClick: () => void openPluginManager() },
+          ],
+          addBtn,
+        ),
+      );
+    });
+    const arrangeBtn = h('button', { class: 'toolbar-button', type: 'button', title: '정렬 — 위젯 높이·너비 균등 분배, 자리 바꾸기' }, icon(LayoutDashboard, 15), h('span', {}, '정렬'), icon(ChevronDown, 14));
+    arrangeBtn.addEventListener('click', () => {
+      const sel = store.ws.selectedWidgetId;
+      showMenu(arrangeMenu(this.wsId, sel && store.widget(this.wsId, sel) ? sel : null), arrangeBtn);
+    });
+
+    const header = h(
+      'div',
+      { class: 'view-header' },
+      h('div', { class: 'view-header-nav' }, this.backBtn, this.fwdBtn),
+      h(
+        'div',
+        { class: 'view-header-range' },
+        presetBtn,
+        optional(iconButton(ChevronLeft, '왼쪽으로 이동 (←)', () => this.pan(-0.25))),
+        this.rangeEditor.el,
+        optional(iconButton(ChevronRight, '오른쪽으로 이동 (→)', () => this.pan(0.25))),
+        optional(iconButton(ZoomIn, '확대 (+)', () => this.zoom(0.5))),
+        optional(iconButton(ZoomOut, '축소 (-)', () => this.zoom(2))),
+        optional(iconButton(Maximize, '전체 보기 (A)', () => this.applyPreset(null))),
+      ),
+      h('div', { class: 'widget-header-spacer' }),
+      h(
+        'div',
+        { class: 'view-actions' },
+        this.annoBtn,
+        this.crossBtn,
+        arrangeBtn,
+        addBtn,
+      ),
+    );
+
+    this.tilesEl = h('div', { class: 'tiles' });
+    this.emptyState = h(
+      'div',
+      { class: 'empty-state' },
+      h('div', { class: 'empty-state-title' }, '빈 워크시트'),
+      h('div', { class: 'empty-state-desc' }, '왼쪽 탐색기에서 시리즈(열)를 이 영역으로 드래그하면 차트 위젯이 생성됩니다.'),
+      h(
+        'div',
+        { class: 'empty-state-actions' },
+        h('button', { class: 'mod-cta', type: 'button', onclick: (() => actions.openCsv()) as EventListener }, icon(FolderOpen, 15), ' CSV 열기'),
+        h('button', { type: 'button', onclick: (() => actions.loadSample()) as EventListener }, icon(Sparkles, 15), ' 샘플 데이터'),
+        h('button', { type: 'button', onclick: (() => store.addWidget(this.wsId)) as EventListener }, icon(Plus, 15), ' 빈 위젯'),
+      ),
+    );
+    // bottom edge of the worksheet: drag to make it taller than the screen
+    this.growHandle = h('div', { class: 'sheet-grow', title: '끌어서 워크시트 높이 조절 (화면보다 길게 가능) · 더블클릭: 화면 높이에 맞추기' });
+    this.growHandle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const rows = this.rootRows;
+      this.pushDrag(e, this.growHandle, rows?.split ?? null, rows?.kids ?? [], rows ? rows.kids.length - 1 : 0);
+    });
+    this.growHandle.addEventListener('dblclick', () => store.resizeSheet(this.wsId, null));
+    this.annoBar = h(
+      'div',
+      { class: 'anno-mode-bar', hidden: true },
+      icon(MessageSquarePlus, 15),
+      h('span', {}, '주석 모드 — 시계열 그래프는 클릭하면 그 시점, 드래그하면 그 구간에, 플러그인 차트는 클릭하면 차트 전체에 주석을 답니다.'),
+      h('button', { type: 'button', onclick: (() => store.setAnnotating(false)) as EventListener }, '취소 (Esc)'),
+    );
+    const content = h('div', { class: 'view-content' }, this.tilesEl, this.growHandle, this.emptyState);
+    this.el = h('div', { class: 'workspace-leaf' }, header, content, this.annoBar, h('div', { class: 'maximize-host' }));
+
+    this.bindDrop(content);
+    // where new tiles go depends on the real worksheet size
+    const ro = new ResizeObserver(() => {
+      if (content.clientWidth > 0) store.viewSize = { w: content.clientWidth - 12, h: content.clientHeight - 24 };
+    });
+    ro.observe(content);
+    this.unsub.push(() => ro.disconnect());
+    this.syncWidgets();
+    this.syncToolbar();
+
+    this.unsub.push(
+      store.on('widgets', (ws) => {
+        if (ws !== this.wsId) return;
+        this.syncWidgets();
+        this.syncToolbar();
+      }),
+      store.on('range', (ws) => ws === this.wsId && this.syncToolbar()),
+      store.on('settings', () => this.syncToolbar()),
+      store.on('worksheets', () => this.syncToolbar()),
+      store.on('annotating', () => {
+        this.annoBtn.classList.toggle('is-active', store.annotating);
+        this.annoBar.hidden = !store.annotating;
+      }),
+    );
+  }
+
+  destroy() {
+    this.unsub.forEach((f) => f());
+    this.widgets.forEach((w) => w.destroy());
+    this.widgets.clear();
+    this.el.remove();
+  }
+
+  private syncWidgets() {
+    const ws = store.sheet(this.wsId);
+    if (!ws) return;
+    const ids = new Set(ws.widgets.map((w) => w.id));
+    for (const [id, w] of this.widgets) {
+      if (!ids.has(id)) {
+        if (w.isMaximized) w.toggleMaximize();
+        w.destroy();
+        this.widgets.delete(id);
+      }
+    }
+    for (const st of ws.widgets) if (!this.widgets.has(st.id)) this.widgets.set(st.id, new ChartWidget(this.wsId, st.id));
+    this.renderTiles();
+    this.emptyState.hidden = ws.widgets.length > 0;
+  }
+
+  /** Lay the widgets out as nested flex splits with draggable gutters. */
+  private renderTiles() {
+    const tree = store.layoutOf(this.wsId);
+    this.growHandle.hidden = !tree;
+    if (!tree) return this.tilesEl.replaceChildren();
+    const root = this.buildTile(tree, true);
+    // a widget left alone keeps the share it had beside others (e.g. flex 0.5): reset it
+    root.el.style.flex = root.el.style.minWidth = root.el.style.minHeight = '';
+    // more tiles than fit: the worksheet scrolls instead of squeezing them
+    this.tilesEl.style.minWidth = `${root.minW}px`;
+    this.tilesEl.style.minHeight = `${root.minH}px`;
+    const height = store.sheet(this.wsId)?.height;
+    this.tilesEl.style.height = height ? `max(calc(100% - 12px), ${height}px)` : '';
+    this.rootRows = tree.kind === 'split' && tree.dir === 'col' ? { split: tree, kids: [...root.el.children].filter((c) => !c.classList.contains('tile-gutter')) as HTMLElement[] } : null;
+    this.tilesEl.replaceChildren(root.el);
+  }
+
+  private buildTile(t: Tile, isRoot = false): { el: HTMLElement; minW: number; minH: number } {
+    if (t.kind === 'leaf') {
+      const w = this.widgets.get(t.id);
+      return { el: w ? w.el : h('div', { class: 'tile' }), minW: MIN_W, minH: MIN_H };
+    }
+    const row = t.dir === 'row';
+    const el = h('div', { class: `tile-split ${row ? 'is-row' : 'is-col'}` });
+    const parts = t.children.map((c) => this.buildTile(c));
+    let minW = 0;
+    let minH = 0;
+    parts.forEach((p, i) => {
+      p.el.style.flex = `${t.sizes[i]} 1 0px`;
+      p.el.style.minWidth = `${p.minW}px`;
+      p.el.style.minHeight = `${p.minH}px`;
+      if (i > 0) el.append(this.gutter(t, i, parts.map((x) => x.el), isRoot && !row));
+      el.append(p.el);
+      if (row) {
+        minW += p.minW + (i ? GUTTER : 0);
+        minH = Math.max(minH, p.minH);
+      } else {
+        minH += p.minH + (i ? GUTTER : 0);
+        minW = Math.max(minW, p.minW);
+      }
+    });
+    return { el, minW, minH };
+  }
+
+  /**
+   * Splitter between child i-1 and i: drag to share their space, double-click
+   * to even it out. Between the worksheet's top-level rows (`push`) dragging
+   * resizes only the row above and moves the rest, so the sheet can grow
+   * past the screen and scroll.
+   */
+  private gutter(t: Tile & { kind: 'split' }, i: number, kids: HTMLElement[], push = false) {
+    const row = t.dir === 'row';
+    const g = h('div', { class: `tile-gutter ${row ? 'is-row' : 'is-col'}`, title: push ? '끌어서 위 위젯 높이 조절 (아래는 밀려남) · 더블클릭: 반반' : '끌어서 크기 조절 · 더블클릭: 반반' });
+    if (push)
+      g.addEventListener('pointerdown', (down) => {
+        if (down.button === 0) this.pushDrag(down, g, t, kids, i - 1);
+      });
+    const sizes = [...t.sizes];
+    const apply = () => kids.forEach((k, j) => (k.style.flex = `${sizes[j]} 1 0px`));
+    g.addEventListener('pointerdown', (down) => {
+      if (down.button !== 0 || push) return;
+      down.preventDefault();
+      g.setPointerCapture(down.pointerId);
+      g.classList.add('is-active');
+      const a = kids[i - 1].getBoundingClientRect();
+      const b = kids[i].getBoundingClientRect();
+      const span = row ? a.width + b.width : a.height + b.height;
+      const share = sizes[i - 1] + sizes[i];
+      const start = row ? down.clientX : down.clientY;
+      const startA = row ? a.width : a.height;
+      const minA = row ? parseFloat(kids[i - 1].style.minWidth) : parseFloat(kids[i - 1].style.minHeight);
+      const minB = row ? parseFloat(kids[i].style.minWidth) : parseFloat(kids[i].style.minHeight);
+      const move = (e: PointerEvent) => {
+        const px = Math.max(minA || 0, Math.min(span - (minB || 0), startA + (row ? e.clientX : e.clientY) - start));
+        sizes[i - 1] = (share * px) / span;
+        sizes[i] = share - sizes[i - 1];
+        apply();
+      };
+      const up = () => {
+        g.classList.remove('is-active');
+        g.removeEventListener('pointermove', move);
+        g.removeEventListener('pointerup', up);
+        g.removeEventListener('pointercancel', up);
+        store.setTileSizes(this.wsId, t.id, [...sizes]);
+      };
+      g.addEventListener('pointermove', move);
+      g.addEventListener('pointerup', up);
+      g.addEventListener('pointercancel', up);
+    });
+    g.addEventListener('dblclick', () => {
+      const share = sizes[i - 1] + sizes[i];
+      sizes[i - 1] = sizes[i] = share / 2;
+      apply();
+      store.setTileSizes(this.wsId, t.id, [...sizes]);
+    });
+    return g;
+  }
+
+  /**
+   * Resize one top-level row (or, without rows, the whole sheet) by dragging:
+   * the other rows keep their height and the worksheet grows or shrinks.
+   */
+  private pushDrag(down: PointerEvent, handle: HTMLElement, split: (Tile & { kind: 'split' }) | null, kids: HTMLElement[], k: number) {
+    down.preventDefault();
+    handle.setPointerCapture(down.pointerId);
+    handle.classList.add('is-active');
+    const px = kids.map((el) => el.getBoundingClientRect().height);
+    const gaps = GUTTER * Math.max(0, kids.length - 1);
+    const startPx = px[k] ?? this.tilesEl.getBoundingClientRect().height;
+    const min = kids.length ? parseFloat(kids[k].style.minHeight) || MIN_H : parseFloat(this.tilesEl.style.minHeight) || MIN_H;
+    let total = this.tilesEl.getBoundingClientRect().height;
+    const move = (e: PointerEvent) => {
+      const v = Math.max(min, startPx + e.clientY - down.clientY);
+      if (kids.length) {
+        px[k] = v;
+        total = px.reduce((a, b) => a + b, 0) + gaps;
+        kids.forEach((el, j) => (el.style.flex = `${px[j]} 1 0px`));
+      } else total = v;
+      this.tilesEl.style.height = `max(calc(100% - 12px), ${total}px)`;
+    };
+    const up = () => {
+      handle.classList.remove('is-active');
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+      const sum = px.reduce((a, b) => a + b, 0) || 1;
+      if (split && kids.length) store.resizeSheet(this.wsId, total, split.id, px.map((p) => p / sum));
+      else store.resizeSheet(this.wsId, total);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+  }
+
+  widget(id: string) {
+    return this.widgets.get(id);
+  }
+
+  private syncToolbar() {
+    const ws = store.sheet(this.wsId);
+    if (!ws) return;
+    const r = store.sheetRange(this.wsId);
+    this.backBtn.disabled = !store.canBack(this.wsId);
+    this.fwdBtn.disabled = !store.canForward(this.wsId);
+    this.rangeEditor.set(r, !ws.range);
+    this.crossBtn.classList.toggle('is-active', ws.crosshair);
+  }
+
+  applyPreset(ms: number | null) {
+    const ext = store.sheetExtent(this.wsId);
+    if (!ext || ms === null) return store.setRange(this.wsId, null);
+    store.setRange(this.wsId, { start: Math.max(ext.start, ext.end - ms), end: ext.end });
+  }
+
+  pan(fraction: number) {
+    const r = store.sheetRange(this.wsId);
+    if (!r) return;
+    const d = (r.end - r.start) * fraction;
+    store.setRange(this.wsId, { start: r.start + d, end: r.end + d });
+  }
+
+  zoom(factor: number) {
+    const r = store.sheetRange(this.wsId);
+    if (!r) return;
+    const c = (r.start + r.end) / 2;
+    const half = ((r.end - r.start) * factor) / 2;
+    const next: TimeRange = { start: c - half, end: c + half };
+    const ext = store.sheetExtent(this.wsId);
+    if (ext && factor > 1 && next.start <= ext.start && next.end >= ext.end) return store.setRange(this.wsId, null);
+    store.setRange(this.wsId, next);
+  }
+
+  /** Series dropped on the empty worksheet (or its margin) become a new widget. */
+  private bindDrop(area: HTMLElement) {
+    dropTarget(area, {
+      accepts: isSeries,
+      drop: (p, e) => {
+        if (!isSeries(p)) return;
+        const w = store.addWidget(this.wsId, {}, p.data.fromWidget ? [] : p.data.items);
+        if (w && p.data.fromWidget) store.moveSeries(p.data.fromWidget, this.wsId, w.id, e.altKey || e.ctrlKey);
+      },
+    });
+  }
+}
+
+/** Smallest tile (px); a worksheet with more tiles than fit scrolls. */
+const MIN_W = MIN_TILE.w;
+const MIN_H = MIN_TILE.h;
+const GUTTER = 6;

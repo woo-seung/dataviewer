@@ -1,0 +1,12 @@
+[package]
+name = "chronos-engine-wasm"
+version = "0.2.0"
+edition = "2021"
+description = "Chronos engine compiled to WebAssembly for the browser (driven by src/engine/worker.ts)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+chronos-engine = { path = "../engine" }
+serde_json = "1"
