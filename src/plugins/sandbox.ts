@@ -101,6 +101,8 @@ export class PluginFrame {
   onRendered?: () => void;
   onZoom?: (zoom: PluginZoom | null) => void;
   onPointerDown?: () => void;
+  /** time under the pointer on a time-axis plugin (null = left), for the shared crosshair */
+  onCursor?: (t: number | null) => void;
   onKey?: (k: { key: string; code: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean }) => void;
   private listener: (e: MessageEvent) => void;
 
@@ -121,6 +123,7 @@ export class PluginFrame {
       else if (m.type === 'rendered') this.onRendered?.();
       else if (m.type === 'zoom') this.onZoom?.(m.zoom ?? null);
       else if (m.type === 'pointerdown') this.onPointerDown?.();
+      else if (m.type === 'cursor') this.onCursor?.(Number.isFinite(m.t) ? m.t : null);
       else if (m.type === 'key' && typeof m.key === 'string') this.onKey?.(m);
       else if (m.type === 'snapshot') {
         this.snaps.get(m.id)?.(m.url ?? null);
@@ -143,6 +146,16 @@ export class PluginFrame {
   async render(msg: { params: unknown; width: number; height: number; range: { start: number; end: number } | null; zoom: PluginZoom | null; crosshair?: boolean }) {
     await this.ready;
     this.iframe.contentWindow?.postMessage({ type: 'render', ...msg, theme: pluginTheme() }, '*');
+  }
+
+  /** The pointer left the frame (seen by the page): drop the chart's hover crosshair / tooltip. */
+  leave() {
+    this.iframe.contentWindow?.postMessage({ type: 'leave' }, '*');
+  }
+
+  /** Another widget's cursor time (null = none): drawn as a vertical line on time-axis plugins. */
+  setCursor(t: number | null) {
+    this.iframe.contentWindow?.postMessage({ type: 'cursor', t }, '*');
   }
 
   async snapshot(): Promise<string | null> {

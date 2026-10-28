@@ -183,6 +183,7 @@ export class ChartWidget {
   private xLabel: HTMLElement;
   private yLabel: HTMLElement;
   private pointTip: HTMLElement;
+  private cursorOut: (() => void) | null = null;
   private pointDot: HTMLElement;
   private mouseY: number | null = null;
   private lastCursor: number | null = null;
@@ -299,6 +300,7 @@ export class ChartWidget {
   }
 
   destroy() {
+    if (this.cursorOut) window.removeEventListener('pointermove', this.cursorOut, true);
     this.unsub.forEach((f) => f());
     this.ro.disconnect();
     this.u?.destroy();
@@ -659,6 +661,19 @@ export class ChartWidget {
       this.frame.onSetRange = (a, b) => this.setRange({ start: a, end: b });
       this.frame.onError = (m) => log(`plugin ${rec.id}: ${m}`);
       this.frame.onZoom = (z) => store.setPluginZoom(this.wsId, this.id, z);
+      this.frame.onCursor = (t) => {
+        store.cursor(this.wsId, t, t === null ? null : this.id);
+        if (t === null || this.cursorOut) return;
+        // the page only sees pointer moves outside the frame: the first one ends this cursor
+        // (the frame does not always report leaving)
+        this.cursorOut = () => {
+          window.removeEventListener('pointermove', this.cursorOut!, true);
+          this.cursorOut = null;
+          this.frame?.leave();
+          store.cursor(this.wsId, null, null);
+        };
+        window.addEventListener('pointermove', this.cursorOut, true);
+      };
       this.frame.onPointerDown = () => {
         if (store.ws.selectedWidgetId !== this.id) store.select(this.id);
       };
@@ -1022,6 +1037,11 @@ export class ChartWidget {
     if (!st) return;
     const fromState = c.from ? store.widget(this.wsId, c.from) : null;
     const shared = st.linked && (fromState?.linked ?? true);
+    if (st.plugin) {
+      // the plugin draws other widgets' cursor itself (when its x axis is time)
+      if (c.from !== this.id) this.frame?.setCursor(shared ? c.x : null);
+      return;
+    }
     if (c.from !== this.id && !shared) {
       if (this.lastCursor !== null) this.drawCursor(null, false);
       return;

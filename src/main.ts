@@ -5,12 +5,13 @@ import { App } from './ui/app';
 import { project } from './project';
 import { log } from './engine';
 import { notice } from './ui/overlays';
+import { plugins } from './plugins/registry';
 
 async function boot() {
   const store = initStore();
   document.body.classList.add(store.ws.settings.theme === 'dark' ? 'theme-dark' : 'theme-light');
   new App(document.getElementById('app')!);
-  (window as unknown as { __chronos: unknown }).__chronos = { store, project };
+  (window as unknown as { __chronos: unknown }).__chronos = { store, project, plugins };
   // diagnostics (saved with the command "진단 로그 저장")
   let errors = 0;
   const report = (m: string) => errors++ < 50 && log(m);

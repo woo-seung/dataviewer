@@ -75,7 +75,7 @@ export default {
 | \`signal\` | AbortSignal. 더 새로운 render가 시작되면 aborted — await 뒤에 \`if (ctx.signal.aborted) return;\` |
 | \`state\` | 렌더 사이에 유지되는 빈 객체 (캐시 등) |
 | \`zoom\` | 사용자가 확대/이동한 보기 \`{ x: [min, max] \| null, y: [min, max] \| null }\` (데이터 단위) 또는 null — 있으면 축 domain으로 쓰세요 |
-| \`enableZoom({ x, y, area })\` | 그린 뒤 호출하면 **드래그 = 이동, Ctrl+드래그 = 박스 확대, Ctrl+휠 = 커서 기준 확대/축소, Shift+휠 = 좌우 이동, 더블클릭 = 전체** 가 켜집니다. x·y는 d3 연속 스케일(\`invert\` 필요, 한쪽만 줘도 됨), area는 \`{ left, top, width, height }\` = ctx.el 기준 플롯 영역(스케일 range는 이 영역 안 좌표 0…width / height…0). 연속 축이 있는 차트라면 꼭 호출하세요 |
+| \`enableZoom({ x, y, area })\` | 그린 뒤 호출하면 **드래그 = 이동, Ctrl+드래그 = 박스 확대, Ctrl+휠 = 커서 기준 확대/축소, Shift+휠 = 좌우 이동, 더블클릭 = 전체** 가 켜집니다. x·y는 d3 연속 스케일(\`invert\` 필요, 한쪽만 줘도 됨), area는 \`{ left, top, width, height }\` = ctx.el 기준 플롯 영역(스케일 range는 이 영역 안 좌표 0…width / height…0). 연속 축이 있는 차트라면 꼭 호출하세요. **x축이 시각(epoch ms)이면 \`time: true\`** 를 주세요 — 크로스헤어가 워크시트의 다른 위젯과 연동됩니다 (커서 시각 표시·공유). x 스케일은 epoch ms 값의 선형 스케일(d3.scaleLinear 또는 scaleUtc) |
 | \`hoverPoints({ x, y, xScale, yScale, area, label })\` | 그린 점들을 등록하면 커서가 가까이(14px) 가면 그 점에 표시를 하고 \`label(i)\`가 돌려준 HTML(이름·값·시각 등)을 커서 옆에 띄웁니다. x·y = 데이터 값 배열, xScale·yScale = 그린 스케일, area = enableZoom과 같은 플롯 영역. 점·선 그래프라면 꼭 호출하세요 (크로스헤어는 enableZoom만 하면 자동) |
 | \`d3\` | d3 v7 |
 

@@ -257,7 +257,52 @@
     if (tipOwned) tooltip.hide();
     tipOwned = false;
   };
+  // ---- the worksheet's shared time cursor (plugins whose x axis is time) ----
+  // time axis: enableZoom({ time: true }), or an x domain lying around the
+  // worksheet's time range (epoch ms) — so plugins made before this work too
+  const isTime = () => {
+    const c = zoomCfg;
+    if (!c || !c.x || c.time === false) return false;
+    if (c.time === true) return true;
+    const r = lastRender && lastRender.range;
+    if (!r) return false;
+    const [d0, d1] = c.x.domain().map(Number);
+    const span = Math.max(1, r.end - r.start);
+    return d0 > 1e11 && d1 > d0 && d0 >= r.start - 10 * span && d1 <= r.end + 10 * span;
+  };
+  let remoteT = null;
+  let hovering = false;
+  let sentT;
+  const sendCursor = (t) => {
+    if (t === sentT) return;
+    sentT = t;
+    post({ type: 'cursor', t });
+  };
+  const drawRemote = () => {
+    const v = overlay.rv;
+    const l = overlay.rl;
+    const hide = () => {
+      if (v) v.style.display = 'none';
+      if (l) l.style.display = 'none';
+    };
+    if (remoteT === null || hovering || !showCross || !isTime()) return hide();
+    const a = zoomCfg.area;
+    const px = zoomCfg.x(remoteT);
+    if (!(px >= 0 && px <= a.width)) return hide();
+    Object.assign(part('rv', 'chronos-cross-v').style, { display: 'block', left: `${a.left + px}px`, top: `${a.top}px`, height: `${a.height}px` });
+    const lab = part('rl', 'chronos-cross-label');
+    lab.textContent = format.time(remoteT, true);
+    lab.style.display = 'block';
+    lab.style.left = `${Math.max(a.left, Math.min(a.left + a.width - lab.offsetWidth, a.left + px - lab.offsetWidth / 2))}px`;
+    lab.style.top = `${a.top + a.height + 2}px`;
+  };
   root.addEventListener('pointermove', (e) => {
+    hovering = !!local(e);
+    if (hovering) {
+      if (overlay.rv) overlay.rv.style.display = 'none';
+      if (overlay.rl) overlay.rl.style.display = 'none';
+    }
+    sendCursor(hovering && isTime() ? zoomCfg.x.invert(local(e).x) : null);
     if (dragging || e.buttons) return hideHover();
     const cfg = zoomCfg || (hoverCfg && hoverCfg.area ? { area: hoverCfg.area } : null);
     const p = local(e) || (hoverCfg && !zoomCfg ? localIn(e, hoverCfg.area) : null);
@@ -269,7 +314,8 @@
       const xl = part('xl', 'chronos-cross-label');
       const yl = part('yl', 'chronos-cross-label');
       if (zoomCfg.x) {
-        xl.textContent = format.number(zoomCfg.x.invert(p.x));
+        const xv = zoomCfg.x.invert(p.x);
+        xl.textContent = isTime() ? format.time(xv, true) : format.number(xv);
         xl.style.display = 'block';
         xl.style.left = `${Math.max(a.left, Math.min(a.left + a.width - xl.offsetWidth, a.left + p.x - xl.offsetWidth / 2))}px`;
         xl.style.top = `${a.top + a.height + 2}px`;
@@ -302,7 +348,16 @@
     tooltip.show(r.left + hoverCfg.area.left + hx, r.top + hoverCfg.area.top + hy, html);
     tipOwned = true;
   });
-  root.addEventListener('pointerleave', hideHover);
+  const leave = () => {
+    hideHover();
+    hovering = false;
+    sendCursor(null);
+    drawRemote();
+  };
+  root.addEventListener('pointerleave', leave);
+  // leaving the frame itself (pointerleave on #root is not always sent then)
+  document.addEventListener('pointerout', (e) => !e.relatedTarget && leave());
+  document.documentElement.addEventListener('mouseleave', leave);
   root.addEventListener('pointerdown', () => {
     dragging = true;
     hideHover();
@@ -383,12 +438,13 @@
       },
       enableZoom(cfg) {
         if (!cfg || !cfg.area || (!cfg.x && !cfg.y)) return;
-        zoomCfg = { x: cfg.x && cfg.x.invert ? cfg.x : null, y: cfg.y && cfg.y.invert ? cfg.y : null, area: cfg.area };
+        zoomCfg = { x: cfg.x && cfg.x.invert ? cfg.x : null, y: cfg.y && cfg.y.invert ? cfg.y : null, area: cfg.area, time: cfg.time };
         root.style.cursor = 'grab';
       },
     };
     try {
       await plugin().render(ctx);
+      if (!ac.signal.aborted) drawRemote();
       if (!ac.signal.aborted && !live) post({ type: 'rendered' });
     } catch (e) {
       if (!ac.signal.aborted) showError(e);
@@ -450,6 +506,11 @@
       } catch (err) {
         post({ type: 'manifest', error: String(err.message || err) });
       }
+    } else if (m.type === 'leave') {
+      leave();
+    } else if (m.type === 'cursor') {
+      remoteT = Number.isFinite(m.t) ? m.t : null;
+      drawRemote();
     } else if (m.type === 'render') {
       void render(m);
     } else if (m.type === 'snapshot') {
