@@ -212,6 +212,8 @@ export class WorksheetView {
     this.growHandle.hidden = !tree;
     if (!tree) return this.tilesEl.replaceChildren();
     const root = this.buildTile(tree, true);
+    // a widget left alone keeps the share it had beside others (e.g. flex 0.5): reset it
+    root.el.style.flex = root.el.style.minWidth = root.el.style.minHeight = '';
     // more tiles than fit: the worksheet scrolls instead of squeezing them
     this.tilesEl.style.minWidth = `${root.minW}px`;
     this.tilesEl.style.minHeight = `${root.minH}px`;

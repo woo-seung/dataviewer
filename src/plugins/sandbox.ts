@@ -100,6 +100,8 @@ export class PluginFrame {
   onError?: (message: string) => void;
   onRendered?: () => void;
   onZoom?: (zoom: PluginZoom | null) => void;
+  onPointerDown?: () => void;
+  onKey?: (k: { key: string; code: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean }) => void;
   private listener: (e: MessageEvent) => void;
 
   constructor(code: string, private api: Api) {
@@ -118,6 +120,8 @@ export class PluginFrame {
       else if (m.type === 'error') this.onError?.(String(m.message));
       else if (m.type === 'rendered') this.onRendered?.();
       else if (m.type === 'zoom') this.onZoom?.(m.zoom ?? null);
+      else if (m.type === 'pointerdown') this.onPointerDown?.();
+      else if (m.type === 'key' && typeof m.key === 'string') this.onKey?.(m);
       else if (m.type === 'snapshot') {
         this.snaps.get(m.id)?.(m.url ?? null);
         this.snaps.delete(m.id);

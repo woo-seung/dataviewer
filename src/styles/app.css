@@ -999,6 +999,12 @@ body.is-dragging .tile-gutter {
   overflow: auto;
   border-top: 1px solid var(--background-modifier-border);
 }
+.legend-table tbody tr.is-selected td {
+  background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), 0.18);
+}
+.legend-table tbody tr.is-selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--interactive-accent);
+}
 .legend-table {
   width: 100%;
   border-collapse: collapse;

@@ -131,6 +131,36 @@ function fillLinear(x: Float64Array, y: Cell[]): (number | null)[] {
   return out;
 }
 
+/** Legend rows picked with a click (one widget at a time); Delete removes those series. */
+let legendPick: { wsId: string; widgetId: string; ids: Set<string> } | null = null;
+
+function markLegendPick() {
+  document.querySelectorAll<HTMLElement>('.legend-table tr[data-series-id]').forEach((tr) => {
+    const w = tr.closest<HTMLElement>('.tile')?.dataset.id;
+    tr.classList.toggle('is-selected', !!legendPick && legendPick.widgetId === w && legendPick.ids.has(tr.dataset.seriesId!));
+  });
+}
+
+// a click anywhere but on a legend row drops the pick
+document.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (!legendPick || (e.target as HTMLElement).closest?.('.legend-table tr[data-series-id]')) return;
+    legendPick = null;
+    markLegendPick();
+  },
+  true,
+);
+
+/** Remove the picked legend series; false when no row is picked. */
+export function deleteLegendPick(): boolean {
+  const p = legendPick;
+  if (!p || !p.ids.size || !store.widget(p.wsId, p.widgetId)) return false;
+  legendPick = null;
+  store.removeSeries(p.wsId, p.widgetId, [...p.ids]);
+  return true;
+}
+
 export class ChartWidget {
   readonly el: HTMLElement;
   readonly content: HTMLElement;
@@ -629,6 +659,11 @@ export class ChartWidget {
       this.frame.onSetRange = (a, b) => this.setRange({ start: a, end: b });
       this.frame.onError = (m) => log(`plugin ${rec.id}: ${m}`);
       this.frame.onZoom = (z) => store.setPluginZoom(this.wsId, this.id, z);
+      this.frame.onPointerDown = () => {
+        if (store.ws.selectedWidgetId !== this.id) store.select(this.id);
+      };
+      // keys pressed while the chart frame has focus: replay them on the page
+      this.frame.onKey = (k) => document.body.dispatchEvent(new KeyboardEvent('keydown', { ...k, bubbles: true, cancelable: true }));
       this.pluginHost.replaceChildren(this.frame.iframe);
       this.frameKey = key;
     }
@@ -914,7 +949,7 @@ export class ChartWidget {
       this.valueCells.push(val);
       const row = h(
         'tr',
-        { class: s.visible ? '' : 'is-hidden', title: `${source.name} › ${s.column}\nCtrl+클릭: 이 시리즈만 보기 (다시 Ctrl+클릭: 모두 보기)` },
+        { class: s.visible ? '' : 'is-hidden', title: `${source.name} › ${s.column}\n클릭: 선택 (Shift: 여러 개) → Delete: 이 시리즈 삭제\nCtrl+클릭: 이 시리즈만 보기 (다시 Ctrl+클릭: 모두 보기)` },
         h('td', { class: 'legend-name' }, swatch, h('span', {}, s.label)),
         val,
         ...this.statRow(statCells),
@@ -927,9 +962,19 @@ export class ChartWidget {
       row.addEventListener('mouseenter', () => s.visible && this.u?.setSeries(i + 1, { focus: true }));
       row.addEventListener('mouseleave', () => this.u?.setSeries(null, { focus: false }));
       row.addEventListener('dblclick', () => store.select(this.id));
-      // Ctrl+click: only this series (again: all of them)
+      row.dataset.seriesId = s.id;
+      if (legendPick?.widgetId === this.id && legendPick.ids.has(s.id)) row.classList.add('is-selected');
+      // Ctrl+click: only this series (again: all of them); click: select the row
+      // (Shift+click: add / remove), then Delete removes the selected series
       row.addEventListener('click', (e) => {
-        if (e.ctrlKey || e.metaKey) store.soloSeries(this.wsId, this.id, s.id);
+        if (e.ctrlKey || e.metaKey) return store.soloSeries(this.wsId, this.id, s.id);
+        const same = legendPick?.widgetId === this.id;
+        if (e.shiftKey && same) {
+          if (legendPick!.ids.has(s.id)) legendPick!.ids.delete(s.id);
+          else legendPick!.ids.add(s.id);
+        } else legendPick = { wsId: this.wsId, widgetId: this.id, ids: new Set([s.id]) };
+        markLegendPick();
+        if (store.ws.selectedWidgetId !== this.id) store.select(this.id);
       });
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();

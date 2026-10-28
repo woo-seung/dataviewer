@@ -22,7 +22,7 @@ import { log, logText } from '../engine';
 import { download, droppedFiles } from '../dialogs';
 import { formatTime } from '../data/time';
 import { clamp, formatBytes, formatCount, h, icon, iconButton } from '../util';
-import { ChartWidget } from './chartWidget';
+import { ChartWidget, deleteLegendPick } from './chartWidget';
 import { openCommandPalette, type Command } from './commandPalette';
 import { Explorer } from './explorer';
 import { modal, notice } from './overlays';
@@ -412,6 +412,8 @@ export class App {
       else if (e.key === '-') v?.zoom(2);
       else if (e.key === 'a' || e.key === 'A') v?.applyPreset(null);
       else if ((e.key === 'f' || e.key === 'F') && sel) v?.widget(sel)?.toggleMaximize();
+      // picked legend rows first (only those series), else the selected widget
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && deleteLegendPick()) return e.preventDefault();
       else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) store.removeWidget(ws, sel);
       else if (e.key === 'n' || e.key === 'N') store.setAnnotating(!store.annotating);
       else if (e.key === 'Escape' && store.annotating) store.setAnnotating(false);

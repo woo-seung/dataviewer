@@ -460,6 +460,13 @@
       }
     }
   });
+  // the host's widget selection and shortcuts (Delete, Ctrl+Z, arrows…) work over the chart too
+  window.addEventListener('pointerdown', () => post({ type: 'pointerdown' }), true);
+  window.addEventListener('keydown', (e) => {
+    if (e.target && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')) return;
+    post({ type: 'key', key: e.key, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey });
+    if (e.ctrlKey || e.metaKey || e.key === 'Delete' || e.key === 'Backspace') e.preventDefault();
+  });
   window.addEventListener('error', (e) => showError(e.error || e.message));
   window.addEventListener('unhandledrejection', (e) => showError(e.reason));
   post({ type: 'ready' });
